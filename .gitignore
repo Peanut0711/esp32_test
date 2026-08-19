@@ -1,0 +1,8 @@
+# PlatformIO build cache and downloaded package output
+.pio/
+**/.pio/
+
+# Editor and operating-system metadata
+.vscode/
+.DS_Store
+Thumbs.db
