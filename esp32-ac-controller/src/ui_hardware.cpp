@@ -4,6 +4,7 @@
 #include <Adafruit_SHT4x.h>
 #include <Arduino.h>
 #include <Wire.h>
+#include <string.h>
 
 namespace {
 
@@ -69,8 +70,11 @@ bool oledReady = false;
 bool sht40Ready = false;
 float temperatureC = NAN;
 float humidityPercent = NAN;
-int8_t targetTemperatureC = 27;
 char lastAction[16] = "BOOT";
+char automaticControlStatus[16] = "NO WIFI CFG";
+bool automaticClockValid = false;
+uint8_t automaticClockHour = 0;
+uint8_t automaticClockMinute = 0;
 UiScreen currentScreen = UiScreen::kMain;
 MainMenuSelection mainMenuSelection = MainMenuSelection::kTransmit;
 TransmitSelection transmitSelection = TransmitSelection::kOn;
@@ -446,18 +450,23 @@ void drawDisplay(uint32_t nowMs) {
   oled.setCursor(0, 0);
   oled.println(line);
 
-  snprintf(line, sizeof(line), "SET:%dC  AUTO:OFF", targetTemperatureC);
+  if (automaticClockValid) {
+    snprintf(line, sizeof(line), "TIME:%02u:%02u KST", automaticClockHour,
+             automaticClockMinute);
+  } else {
+    snprintf(line, sizeof(line), "TIME:--:-- KST");
+  }
   oled.setCursor(0, 13);
   oled.println(line);
-  oled.setCursor(0, 26);
-  oled.println("COOL  F1  SWING ON");
 
-  snprintf(line, sizeof(line), "LAST:%s", lastAction);
+  oled.setCursor(0, 26);
+  oled.printf("AUTO:%s", automaticControlStatus);
+
+  snprintf(line, sizeof(line), "ON>28C C27 F1 SW1");
   oled.setCursor(0, 39);
   oled.println(line);
 
-  snprintf(line, sizeof(line), "OLED:%s SHT:%s", oledReady ? "OK" : "--",
-           sht40Ready ? "OK" : "--");
+  snprintf(line, sizeof(line), "LAST:%s", lastAction);
   oled.setCursor(0, 52);
   oled.println(line);
   oled.display();
@@ -496,6 +505,25 @@ void clearUiLearningStatus() {
 }
 
 const char *getUiLearningRequestLabel() { return learningRequestLabel; }
+
+float getUiTemperatureC() { return temperatureC; }
+
+void setUiAutomaticControlStatus(const char *status, bool clockValid,
+                                 uint8_t hour, uint8_t minute) {
+  const char *safeStatus = status ? status : "?";
+  if (strcmp(automaticControlStatus, safeStatus) == 0 &&
+      automaticClockValid == clockValid && automaticClockHour == hour &&
+      automaticClockMinute == minute) {
+    return;
+  }
+
+  snprintf(automaticControlStatus, sizeof(automaticControlStatus), "%s",
+           safeStatus);
+  automaticClockValid = clockValid;
+  automaticClockHour = hour;
+  automaticClockMinute = minute;
+  lastDisplayDrawMs = 0;
+}
 
 void setupUiHardware() {
   Wire.begin(kSdaPin, kSclPin);
@@ -586,11 +614,6 @@ UiCommand pollUiHardware() {
   if (encoderChange != 0) {
     switch (currentScreen) {
       case UiScreen::kMain:
-        targetTemperatureC =
-            constrain(targetTemperatureC + encoderChange, 16, 30);
-        snprintf(lastAction, sizeof(lastAction), "ENC %c",
-                 encoderChange > 0 ? '+' : '-');
-        Serial.printf("Encoder: target=%d C\n", targetTemperatureC);
         break;
       case UiScreen::kMainMenu:
         mainMenuSelection = mainMenuSelection == MainMenuSelection::kTransmit
@@ -645,8 +668,8 @@ UiCommand pollUiHardware() {
   if (confirmPressed) {
     switch (currentScreen) {
       case UiScreen::kMain:
-        setUiLastAction("AUTO OFF");
-        Serial.println("Button: CONFIRM -> automatic control is not enabled");
+        setUiLastAction("AUTO STATUS");
+        Serial.println("Button: CONFIRM -> automatic control status");
         break;
       case UiScreen::kMainMenu:
         if (mainMenuSelection == MainMenuSelection::kTransmit) {

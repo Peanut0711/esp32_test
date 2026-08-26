@@ -6,6 +6,7 @@
 #include <ctype.h>
 #include <string.h>
 
+#include "automatic_control.h"
 #include "ir_learning.h"
 #include "ir_packets.h"
 #include "ui_hardware.h"
@@ -22,6 +23,9 @@ constexpr uint16_t kCaptureBufferSize = 1024;
 // 50 ms ends capture after the usual inter-frame gap, while allowing long frames.
 constexpr uint8_t kReceiveTimeoutMs = 50;
 constexpr size_t kCommandBufferSize = 64;
+constexpr uint16_t kLearnedTimingCapacity = 1200;
+constexpr char kAutomaticOnLabel[] = "cool_27_f1_swing_on_turbo_off";
+constexpr char kAutomaticOffLabel[] = "power_off";
 
 IRrecv irrecv(kIrReceivePin, kCaptureBufferSize, kReceiveTimeoutMs, true);
 IRsend irsend(kIrTransmitPin);
@@ -29,6 +33,7 @@ decode_results results;
 
 char commandBuffer[kCommandBufferSize];
 size_t commandLength = 0;
+uint16_t learnedTimings[kLearnedTimingCapacity];
 
 void printCommandHelp() {
   Serial.println("Commands:");
@@ -37,12 +42,32 @@ void printCommandHelp() {
   Serial.println("  list | show <label> | export | erase <label>");
 }
 
-void sendRawCommand(const char *name, uint16_t timings[], size_t timingCount) {
-  Serial.printf("IR TX %s (%u timings)\n", name,
-                static_cast<unsigned int>(timingCount));
-  irsend.sendRaw(timings, timingCount, kIrCarrierKhz);
-  Serial.printf("IR TX %s complete\n", name);
-  setUiLastAction(strcmp(name, "on") == 0 ? "TX ON" : "TX OFF");
+bool sendLearnedCommand(const char *label, const char *displayName,
+                        uint16_t fallbackTimings[], size_t fallbackCount) {
+  uint16_t timingCount = 0;
+  if (loadIrLearningSample(label, learnedTimings, kLearnedTimingCapacity,
+                           &timingCount)) {
+    Serial.printf("IR TX learned %s (%u timings)\n", label, timingCount);
+    irsend.sendRaw(learnedTimings, timingCount, kIrCarrierKhz);
+    Serial.printf("IR TX learned %s complete\n", label);
+  } else {
+    Serial.printf("Using built-in fallback for %s.\n", label);
+    irsend.sendRaw(fallbackTimings, fallbackCount, kIrCarrierKhz);
+  }
+  setUiLastAction(displayName);
+  return true;
+}
+
+bool sendConfiguredOn(const char *displayName) {
+  return sendLearnedCommand(
+      kAutomaticOnLabel, displayName, kAutoOnRaw,
+      sizeof(kAutoOnRaw) / sizeof(kAutoOnRaw[0]));
+}
+
+bool sendConfiguredOff(const char *displayName) {
+  return sendLearnedCommand(
+      kAutomaticOffLabel, displayName, kAutoOffRaw,
+      sizeof(kAutoOffRaw) / sizeof(kAutoOffRaw[0]));
 }
 
 void handleCommand(const char *command) {
@@ -74,15 +99,13 @@ void handleCommand(const char *command) {
       Serial.println("IR transmit is disabled during learning.");
       return;
     }
-    sendRawCommand("on", kAutoOnRaw,
-                   sizeof(kAutoOnRaw) / sizeof(kAutoOnRaw[0]));
+    sendConfiguredOn("TX ON");
   } else if (strcmp(command, "off") == 0) {
     if (isIrLearningActive()) {
       Serial.println("IR transmit is disabled during learning.");
       return;
     }
-    sendRawCommand("off", kAutoOffRaw,
-                   sizeof(kAutoOffRaw) / sizeof(kAutoOffRaw[0]));
+    sendConfiguredOff("TX OFF");
   } else if (strcmp(command, "help") == 0) {
     printCommandHelp();
   } else {
@@ -150,6 +173,7 @@ void setup() {
   irsend.begin();
   setupIrLearning();
   setupUiHardware();
+  setupAutomaticControl();
   Serial.println();
   Serial.println("ESP32-C3 IR receiver/transmitter ready.");
   Serial.println("Receiver: point the AC remote at GPIO3 receiver.");
@@ -160,11 +184,9 @@ void loop() {
   pollSerialCommands();
   const UiCommand uiCommand = pollUiHardware();
   if (uiCommand == UiCommand::kSendOn) {
-    sendRawCommand("on", kAutoOnRaw,
-                   sizeof(kAutoOnRaw) / sizeof(kAutoOnRaw[0]));
+    sendConfiguredOn("TX ON");
   } else if (uiCommand == UiCommand::kSendOff) {
-    sendRawCommand("off", kAutoOffRaw,
-                   sizeof(kAutoOffRaw) / sizeof(kAutoOffRaw[0]));
+    sendConfiguredOff("TX OFF");
   } else if (uiCommand == UiCommand::kStartLearning) {
     const char *label = getUiLearningRequestLabel();
     if (startIrLearning(label)) {
@@ -179,6 +201,20 @@ void loop() {
     clearUiLearningStatus();
     setUiLastAction("CANCEL");
   }
+
+  const AutomaticControlCommand automaticCommand =
+      pollAutomaticControl(getUiTemperatureC());
+  if (automaticCommand == AutomaticControlCommand::kSendOn &&
+      !isIrLearningActive() && sendConfiguredOn("AUTO ON")) {
+    markAutomaticOnSent();
+  }
+
+  uint8_t localHour = 0;
+  uint8_t localMinute = 0;
+  const bool clockValid =
+      getAutomaticControlClock(&localHour, &localMinute);
+  setUiAutomaticControlStatus(getAutomaticControlStatus(), clockValid,
+                              localHour, localMinute);
 
   if (irrecv.decode(&results)) {
     Serial.println("\n========== IR received ==========");

@@ -18,3 +18,6 @@ void setUiLearningProgress(const char *label, uint8_t captured,
 void showUiLearningStartError(const char *label);
 void clearUiLearningStatus();
 const char *getUiLearningRequestLabel();
+float getUiTemperatureC();
+void setUiAutomaticControlStatus(const char *status, bool clockValid,
+                                 uint8_t hour, uint8_t minute);

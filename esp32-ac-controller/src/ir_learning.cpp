@@ -374,3 +374,34 @@ bool eraseIrLearningRecord(const char *label) {
                 removed ? "erased" : "erase failed");
   return removed;
 }
+
+bool loadIrLearningSample(const char *label, uint16_t *timings,
+                          uint16_t capacity, uint16_t *timingCount) {
+  char path[64];
+  if (!storageReady || !timings || !timingCount ||
+      !makeRecordPath(label, path, sizeof(path)) || !LittleFS.exists(path)) {
+    Serial.printf("Learning record not found: %s\n", label ? label : "");
+    return false;
+  }
+
+  File file = LittleFS.open(path, FILE_READ);
+  LearningFileHeader header;
+  LearningSampleHeader sample;
+  if (!file || !readFileHeader(file, &header) ||
+      !readExact(file, &sample, sizeof(sample)) ||
+      sample.timingCount < kMinimumTimingCount ||
+      sample.timingCount > kMaximumTimingCount ||
+      sample.timingCount > capacity ||
+      !readExact(file, timings,
+                 static_cast<size_t>(sample.timingCount) * sizeof(uint16_t))) {
+    if (file) {
+      file.close();
+    }
+    Serial.printf("Failed to load learning record: %s\n", label);
+    return false;
+  }
+
+  file.close();
+  *timingCount = sample.timingCount;
+  return true;
+}

@@ -25,3 +25,5 @@ void listIrLearningRecords();
 bool showIrLearningRecord(const char *label);
 void exportIrLearningRecords();
 bool eraseIrLearningRecord(const char *label);
+bool loadIrLearningSample(const char *label, uint16_t *timings,
+                          uint16_t capacity, uint16_t *timingCount);

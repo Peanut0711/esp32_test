@@ -6,3 +6,6 @@
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Local Wi-Fi credentials
+**/include/wifi_secrets.h
