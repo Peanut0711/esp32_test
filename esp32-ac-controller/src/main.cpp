@@ -4,6 +4,7 @@
 #include <IRutils.h>
 #include <IRac.h>
 #include <ctype.h>
+#include <esp_sleep.h>
 #include <string.h>
 
 #include "automatic_control.h"
@@ -24,6 +25,9 @@ constexpr uint16_t kCaptureBufferSize = 1024;
 constexpr uint8_t kReceiveTimeoutMs = 50;
 constexpr size_t kCommandBufferSize = 64;
 constexpr uint16_t kLearnedTimingCapacity = 1200;
+constexpr uint8_t kBackWakePin = 1;
+constexpr uint32_t kInteractiveIdleTimeoutMs = 30000;
+constexpr uint32_t kTimerWakeMaximumActiveMs = 15000;
 constexpr char kAutomaticOnLabel[] = "cool_27_f1_swing_on_turbo_off";
 constexpr char kAutomaticOffLabel[] = "power_off";
 
@@ -35,6 +39,9 @@ char commandBuffer[kCommandBufferSize];
 size_t commandLength = 0;
 uint16_t learnedTimings[kLearnedTimingCapacity];
 char pendingCustomLearningLabel[32] = "";
+bool lowPowerTimerWake = false;
+uint32_t bootStartedMs = 0;
+uint32_t lastSerialActivityMs = 0;
 
 bool sendLearnedOnly(const char *label, const char *displayName);
 
@@ -228,6 +235,7 @@ void handleCommand(const char *command) {
 
 void pollSerialCommands() {
   while (Serial.available()) {
+    lastSerialActivityMs = millis();
     const int received = Serial.read();
     if (received == '\r') {
       continue;
@@ -251,6 +259,66 @@ void pollSerialCommands() {
       printCommandHelp();
     }
   }
+}
+
+bool automaticClockIsRequired() {
+  return getAutomaticControlSettings().triggerMode !=
+         AutomaticTriggerMode::kTemperatureOnly;
+}
+
+bool automaticSensorIsRequired() {
+  return getAutomaticControlSettings().triggerMode !=
+         AutomaticTriggerMode::kTimeOnly;
+}
+
+bool shouldEnterPowerSaveSleep() {
+  const AutomaticControlSettings settings = getAutomaticControlSettings();
+  if (!settings.powerSaveEnabled || isIrLearningActive()) {
+    return false;
+  }
+
+  const uint32_t nowMs = millis();
+  if (lowPowerTimerWake) {
+    if (!settings.enabled) {
+      return true;
+    }
+    AutomaticControlClock clock = {};
+    const bool clockReady = getAutomaticControlClock(&clock);
+    const bool sensorReady = !isnan(getUiTemperatureC());
+    const bool requiredInputsReady =
+        (!automaticSensorIsRequired() || sensorReady) &&
+        (!automaticClockIsRequired() || clockReady);
+    return requiredInputsReady ||
+           nowMs - bootStartedMs >= kTimerWakeMaximumActiveMs;
+  }
+
+  const uint32_t lastActivityMs =
+      max(getUiLastInteractionMs(), lastSerialActivityMs);
+  return nowMs - lastActivityMs >= kInteractiveIdleTimeoutMs;
+}
+
+void enterPowerSaveSleep() {
+  const AutomaticControlSettings settings = getAutomaticControlSettings();
+  pinMode(kBackWakePin, INPUT_PULLUP);
+  if (digitalRead(kBackWakePin) == LOW) {
+    return;
+  }
+
+  const uint64_t wakeIntervalUs =
+      static_cast<uint64_t>(settings.wakeIntervalMinutes) * 60ULL *
+      1000000ULL;
+  esp_sleep_enable_timer_wakeup(wakeIntervalUs);
+  const esp_err_t gpioWakeResult = esp_deep_sleep_enable_gpio_wakeup(
+      1ULL << kBackWakePin, ESP_GPIO_WAKEUP_GPIO_LOW);
+  Serial.printf("Entering deep sleep for %u minute(s); GPIO1 wake: %s\n",
+                settings.wakeIntervalMinutes,
+                gpioWakeResult == ESP_OK ? "READY" : "FAILED");
+
+  irrecv.disableIRIn();
+  prepareUiForSleep();
+  prepareAutomaticControlForSleep();
+  Serial.flush();
+  esp_deep_sleep_start();
 }
 
 void printDecodedResult(const decode_results *result) {
@@ -278,23 +346,32 @@ void printDecodedResult(const decode_results *result) {
 }
 
 void setup() {
+  bootStartedMs = millis();
+  lowPowerTimerWake =
+      esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER;
   Serial.begin(115200);
-  delay(500);  // Lets the USB serial monitor connect after reset.
+  delay(lowPowerTimerWake ? 20 : 500);
 
-  irrecv.enableIRIn();
+  if (!lowPowerTimerWake) {
+    irrecv.enableIRIn();
+  }
   irsend.begin();
   setupIrLearning();
-  printWifiCredentialDiagnostics();
-  setupAutomaticControl();
-  setupUiHardware();
+  if (!lowPowerTimerWake) {
+    printWifiCredentialDiagnostics();
+  }
+  setupAutomaticControl(lowPowerTimerWake);
+  setupUiHardware(!lowPowerTimerWake);
   const AutomaticControlClock initialClock = {};
   setUiAutomaticControlState(getAutomaticControlStatus(), false, initialClock,
                              getAutomaticControlSettings(),
                              getAutomaticNetworkStatus());
-  Serial.println();
-  Serial.println("ESP32-C3 IR receiver/transmitter ready.");
-  Serial.println("Receiver: point the AC remote at GPIO3 receiver.");
-  printCommandHelp();
+  if (!lowPowerTimerWake) {
+    Serial.println();
+    Serial.println("ESP32-C3 IR receiver/transmitter ready.");
+    Serial.println("Receiver: point the AC remote at GPIO3 receiver.");
+    printCommandHelp();
+  }
 }
 
 void loop() {
@@ -387,7 +464,7 @@ void loop() {
                              localClock, getAutomaticControlSettings(),
                              getAutomaticNetworkStatus());
 
-  if (irrecv.decode(&results)) {
+  if (!lowPowerTimerWake && irrecv.decode(&results)) {
     Serial.println("\n========== IR received ==========");
     if (isIrLearningActive()) {
       Serial.println(resultToHumanReadableBasic(&results));
@@ -405,5 +482,9 @@ void loop() {
       setUiLastAction("IR RX");
     }
     irrecv.resume();  // Re-arm receiver for the next packet.
+  }
+
+  if (shouldEnterPowerSaveSleep()) {
+    enterPowerSaveSleep();
   }
 }

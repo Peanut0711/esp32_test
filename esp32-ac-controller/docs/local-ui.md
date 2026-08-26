@@ -59,6 +59,8 @@ IR: ON  14:32
    ├─ 조건: BOTH/TIME/TEMP
    ├─ 모니터링 시작 시각
    ├─ ON 기준 온도
+   ├─ Deep Sleep: ON/OFF
+   ├─ 기상 간격: 1~5분
    └─ 저장 후 나가기
 ```
 

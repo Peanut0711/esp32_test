@@ -19,6 +19,8 @@ struct AutomaticControlSettings {
   uint8_t startMinute;
   float onTemperatureC;
   AutomaticTriggerMode triggerMode;
+  bool powerSaveEnabled;
+  uint8_t wakeIntervalMinutes;
 };
 
 struct AutomaticControlClock {
@@ -37,7 +39,7 @@ struct AutomaticNetworkStatus {
   char ipAddress[16];
 };
 
-void setupAutomaticControl();
+void setupAutomaticControl(bool minimizeRadio = false);
 AutomaticControlCommand pollAutomaticControl(float temperatureC);
 void markAutomaticOnSent();
 const char *getAutomaticControlStatus();
@@ -46,6 +48,7 @@ bool saveAutomaticControlSettings(const AutomaticControlSettings &settings);
 const char *getAutomaticOnProfileLabel();
 bool saveAutomaticOnProfileLabel(const char *label);
 void printAutomaticControlConfiguration();
+void prepareAutomaticControlForSleep();
 bool getAutomaticControlClock(AutomaticControlClock *clock);
 AutomaticNetworkStatus getAutomaticNetworkStatus();
 void printWifiCredentialDiagnostics();

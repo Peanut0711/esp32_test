@@ -40,8 +40,10 @@ struct UiTransmitSettings {
   bool turbo;
 };
 
-void setupUiHardware();
+void setupUiHardware(bool interactive = true);
 UiCommand pollUiHardware();
+void prepareUiForSleep();
+uint32_t getUiLastInteractionMs();
 void setUiLastAction(const char *action);
 void setUiLearningProgress(const char *label, uint8_t captured,
                            uint8_t required, bool acceptingSignals);

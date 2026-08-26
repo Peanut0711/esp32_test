@@ -46,6 +46,8 @@ enum class AutomaticSettingSelection : uint8_t {
   kTriggerMode,
   kStartTime,
   kOnTemperature,
+  kPowerSave,
+  kWakeInterval,
   kSave,
   kCount,
 };
@@ -98,9 +100,11 @@ bool automaticClockValid = false;
 AutomaticControlClock automaticClock = {};
 AutomaticNetworkStatus automaticNetwork = {};
 AutomaticControlSettings appliedAutomaticSettings = {
-    true, 6, 0, 28.0F, AutomaticTriggerMode::kTimeAndTemperature};
+    true, 6, 0, 28.0F, AutomaticTriggerMode::kTimeAndTemperature, false, 3};
 AutomaticControlSettings draftAutomaticSettings = {
-    true, 6, 0, 28.0F, AutomaticTriggerMode::kTimeAndTemperature};
+    true, 6, 0, 28.0F, AutomaticTriggerMode::kTimeAndTemperature, false, 3};
+bool uiInteractiveEnabled = true;
+uint32_t lastUiInteractionMs = 0;
 UiScreen currentScreen = UiScreen::kMain;
 UiScreen automaticSettingsReturnScreen = UiScreen::kMain;
 MainMenuSelection mainMenuSelection = MainMenuSelection::kTransmit;
@@ -388,6 +392,18 @@ void adjustAutomaticSetting(int8_t change) {
           draftAutomaticSettings.onTemperatureC + change * 0.5F, 16.0F,
           35.0F);
       break;
+    case AutomaticSettingSelection::kPowerSave:
+      draftAutomaticSettings.powerSaveEnabled =
+          !draftAutomaticSettings.powerSaveEnabled;
+      break;
+    case AutomaticSettingSelection::kWakeInterval:
+      draftAutomaticSettings.wakeIntervalMinutes =
+          static_cast<uint8_t>(wrapValue(
+              static_cast<int8_t>(
+                  draftAutomaticSettings.wakeIntervalMinutes) +
+                  change,
+              1, 5));
+      break;
     case AutomaticSettingSelection::kSave:
     case AutomaticSettingSelection::kCount:
       break;
@@ -413,6 +429,13 @@ UiCommand activateAutomaticSetting() {
       }
       break;
     case AutomaticSettingSelection::kOnTemperature:
+      automaticSettingEditing = !automaticSettingEditing;
+      break;
+    case AutomaticSettingSelection::kPowerSave:
+      draftAutomaticSettings.powerSaveEnabled =
+          !draftAutomaticSettings.powerSaveEnabled;
+      break;
+    case AutomaticSettingSelection::kWakeInterval:
       automaticSettingEditing = !automaticSettingEditing;
       break;
     case AutomaticSettingSelection::kSave:
@@ -719,6 +742,14 @@ void drawDisplay(uint32_t nowMs) {
           oled.printf("%c TEMP   %.1fC", marker,
                       draftAutomaticSettings.onTemperatureC);
           break;
+        case AutomaticSettingSelection::kPowerSave:
+          oled.printf("%c SLEEP  %s", marker,
+                      draftAutomaticSettings.powerSaveEnabled ? "ON" : "OFF");
+          break;
+        case AutomaticSettingSelection::kWakeInterval:
+          oled.printf("%c WAKE   %u MIN", marker,
+                      draftAutomaticSettings.wakeIntervalMinutes);
+          break;
         case AutomaticSettingSelection::kSave:
           oled.printf("%c SAVE & EXIT", marker);
           break;
@@ -977,6 +1008,9 @@ void setUiAutomaticControlState(
       appliedAutomaticSettings.startMinute == settings.startMinute &&
       appliedAutomaticSettings.onTemperatureC == settings.onTemperatureC &&
       appliedAutomaticSettings.triggerMode == settings.triggerMode &&
+      appliedAutomaticSettings.powerSaveEnabled == settings.powerSaveEnabled &&
+      appliedAutomaticSettings.wakeIntervalMinutes ==
+          settings.wakeIntervalMinutes &&
       automaticNetwork.configured == network.configured &&
       automaticNetwork.connected == network.connected &&
       automaticNetwork.rssiDbm == network.rssiDbm &&
@@ -997,14 +1031,17 @@ AutomaticControlSettings getUiAutomaticSettings() {
   return draftAutomaticSettings;
 }
 
-void setupUiHardware() {
+void setupUiHardware(bool interactive) {
+  uiInteractiveEnabled = interactive;
+  lastUiInteractionMs = millis();
   Wire.begin(kSdaPin, kSclPin);
   Wire.setClock(100000);
 
-  oledReady = probeI2cAddress(kOledAddress);
+  oledReady = interactive && probeI2cAddress(kOledAddress);
   sht40Ready = probeI2cAddress(kSht40Address);
   Serial.printf("I2C OLED 0x%02X: %s\n", kOledAddress,
-                oledReady ? "FOUND" : "NOT FOUND");
+                interactive ? (oledReady ? "FOUND" : "NOT FOUND")
+                            : "SKIPPED");
   Serial.printf("I2C SHT40 0x%02X: %s\n", kSht40Address,
                 sht40Ready ? "FOUND" : "NOT FOUND");
 
@@ -1027,26 +1064,47 @@ void setupUiHardware() {
                              : "OLED initialization failed.");
   }
 
-  pinMode(kEncoderAPin, INPUT_PULLUP);
-  pinMode(kEncoderBPin, INPUT_PULLUP);
-  previousEncoderState =
-      (static_cast<uint8_t>(digitalRead(kEncoderAPin)) << 1) |
-      static_cast<uint8_t>(digitalRead(kEncoderBPin));
+  if (interactive) {
+    pinMode(kEncoderAPin, INPUT_PULLUP);
+    pinMode(kEncoderBPin, INPUT_PULLUP);
+    previousEncoderState =
+        (static_cast<uint8_t>(digitalRead(kEncoderAPin)) << 1) |
+        static_cast<uint8_t>(digitalRead(kEncoderBPin));
 
-  initializeButton(encoderPush);
-  initializeButton(confirmButton);
-  initializeButton(backButton);
+    initializeButton(encoderPush);
+    initializeButton(confirmButton);
+    initializeButton(backButton);
+  }
   lastSensorReadMs = millis() - kSensorIntervalMs;
   drawDisplay(millis());
 }
 
+void prepareUiForSleep() {
+  if (oledReady) {
+    oled.clearDisplay();
+    oled.display();
+    oled.oled_command(SH110X_DISPLAYOFF);
+  }
+}
+
+uint32_t getUiLastInteractionMs() { return lastUiInteractionMs; }
+
 UiCommand pollUiHardware() {
   const uint32_t nowMs = millis();
   UiCommand command = UiCommand::kNone;
+  if (!uiInteractiveEnabled) {
+    readSensor(nowMs);
+    return command;
+  }
   const int8_t encoderChange = readEncoderChange();
   const bool encoderPushPressed = updateButton(encoderPush, nowMs);
   const bool confirmPressed = updateButton(confirmButton, nowMs);
   const bool backPressed = updateButton(backButton, nowMs);
+
+  if (encoderChange != 0 || encoderPushPressed || confirmPressed ||
+      backPressed) {
+    lastUiInteractionMs = nowMs;
+  }
 
   if (customRecordActionVisible) {
     if (encoderPushPressed) {

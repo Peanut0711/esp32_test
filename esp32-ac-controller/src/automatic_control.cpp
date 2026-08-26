@@ -5,6 +5,7 @@
 #include <WiFi.h>
 #include <esp_arduino_version.h>
 #include <esp_err.h>
+#include <esp_attr.h>
 #include <esp_system.h>
 #include <esp_wifi.h>
 #include <ctype.h>
@@ -38,12 +39,12 @@ constexpr uint16_t kWifiDiagnosticMaxAccessPoints = 8;
 constexpr wifi_power_t kWifiTransmitPower = WIFI_POWER_8_5dBm;
 
 AutomaticControlSettings automaticSettings = {
-    true, 6, 0, 28.0F, AutomaticTriggerMode::kTimeAndTemperature};
+    true, 6, 0, 28.0F, AutomaticTriggerMode::kTimeAndTemperature, false, 3};
 char automaticOnProfileLabel[32] = "cool_27_f1_swing_on_turbo_off";
 bool wifiConfigured = false;
 bool ntpConfigured = false;
-int32_t lastSentDayKey = -1;
-bool temperatureTriggerLatched = false;
+RTC_DATA_ATTR int32_t lastSentDayKey = -1;
+RTC_DATA_ATTR bool temperatureTriggerLatched = false;
 uint32_t lastAutomaticAttemptMs = 0;
 uint32_t lastWifiAttemptMs = 0;
 char statusText[16] = "DISABLED";
@@ -302,7 +303,9 @@ bool settingsAreValid(const AutomaticControlSettings &settings) {
          settings.onTemperatureC >= 16.0F &&
          settings.onTemperatureC <= 35.0F &&
          static_cast<uint8_t>(settings.triggerMode) <=
-             static_cast<uint8_t>(AutomaticTriggerMode::kTemperatureOnly);
+             static_cast<uint8_t>(AutomaticTriggerMode::kTemperatureOnly) &&
+         settings.wakeIntervalMinutes >= 1 &&
+         settings.wakeIntervalMinutes <= 5;
 }
 
 bool profileLabelIsValid(const char *label) {
@@ -331,7 +334,9 @@ void loadSettings() {
       preferences.getUChar("minute", automaticSettings.startMinute),
       preferences.getFloat("temp", automaticSettings.onTemperatureC),
       static_cast<AutomaticTriggerMode>(preferences.getUChar(
-          "mode", static_cast<uint8_t>(automaticSettings.triggerMode)))};
+          "mode", static_cast<uint8_t>(automaticSettings.triggerMode))),
+      preferences.getBool("sleep", automaticSettings.powerSaveEnabled),
+      preferences.getUChar("wake", automaticSettings.wakeIntervalMinutes)};
   const String loadedProfile =
       preferences.getString("profile", kDefaultAutomaticProfile);
   preferences.end();
@@ -350,8 +355,10 @@ void loadSettings() {
 
 }  // namespace
 
-void setupAutomaticControl() {
+void setupAutomaticControl(bool minimizeRadio) {
   loadSettings();
+  setenv("TZ", kKoreanTimezone, 1);
+  tzset();
   printAutomaticControlConfiguration();
 
   wifiConfigured = kWifiSsid[0] != '\0';
@@ -359,6 +366,17 @@ void setupAutomaticControl() {
     Serial.println("Wi-Fi time features unavailable: create "
                    "include/wifi_secrets.h first.");
     setStatus("NO WIFI CFG");
+    return;
+  }
+
+  tm retainedTime = {};
+  const bool retainedClockValid = readKoreanTime(&retainedTime);
+  if (minimizeRadio &&
+      (automaticSettings.triggerMode == AutomaticTriggerMode::kTemperatureOnly ||
+       retainedClockValid)) {
+    lastWifiAttemptMs = millis();
+    setStatus("WAKE CHECK");
+    Serial.println("Wi-Fi skipped for low-power timer wake.");
     return;
   }
 
@@ -380,6 +398,7 @@ AutomaticControlCommand pollAutomaticControl(float temperatureC) {
       automaticSettings.triggerMode == AutomaticTriggerMode::kTemperatureOnly;
   bool clockReady = false;
   tm localTime = {};
+  clockReady = readKoreanTime(&localTime);
 
   if (wifiConfigured && WiFi.status() != WL_CONNECTED) {
     ntpConfigured = false;
@@ -429,12 +448,10 @@ AutomaticControlCommand pollAutomaticControl(float temperatureC) {
     return AutomaticControlCommand::kNone;
   }
 
-  if (!wifiConfigured || WiFi.status() != WL_CONNECTED) {
-    setStatus(wifiConfigured ? "WIFI WAIT" : "NO WIFI CFG");
-    return AutomaticControlCommand::kNone;
-  }
   if (!clockReady) {
-    setStatus("TIME SYNC");
+    setStatus(!wifiConfigured || WiFi.status() != WL_CONNECTED
+                  ? (wifiConfigured ? "WIFI WAIT" : "NO WIFI CFG")
+                  : "TIME SYNC");
     return AutomaticControlCommand::kNone;
   }
 
@@ -521,6 +538,10 @@ bool saveAutomaticControlSettings(
   saved = (preferences.putUChar(
                "mode", static_cast<uint8_t>(settings.triggerMode)) == 1) &&
           saved;
+  saved =
+      (preferences.putBool("sleep", settings.powerSaveEnabled) == 1) && saved;
+  saved = (preferences.putUChar("wake", settings.wakeIntervalMinutes) == 1) &&
+          saved;
   preferences.end();
   if (!saved) {
     Serial.println("Automatic settings save failed.");
@@ -575,6 +596,16 @@ void printAutomaticControlConfiguration() {
                 automaticSettings.startMinute);
   Serial.printf("  temp    : %.1f C\n", automaticSettings.onTemperatureC);
   Serial.printf("  profile : %s\n", automaticOnProfileLabel);
+  Serial.printf("  sleep   : %s\n",
+                automaticSettings.powerSaveEnabled ? "ON" : "OFF");
+  Serial.printf("  wake    : %u minute(s)\n",
+                automaticSettings.wakeIntervalMinutes);
+}
+
+void prepareAutomaticControlForSleep() {
+  WiFi.disconnect(true, false);
+  WiFi.mode(WIFI_OFF);
+  ntpConfigured = false;
 }
 
 bool getAutomaticControlClock(AutomaticControlClock *clock) {
