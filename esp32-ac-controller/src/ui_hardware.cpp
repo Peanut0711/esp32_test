@@ -21,6 +21,16 @@ constexpr uint32_t kButtonDebounceMs = 25;
 constexpr uint32_t kSensorIntervalMs = 1000;
 constexpr uint32_t kDisplayIntervalMs = 100;
 
+enum class UiScreen : uint8_t {
+  kMain,
+  kTransmitMenu,
+};
+
+enum class TransmitSelection : uint8_t {
+  kOn,
+  kOff,
+};
+
 struct DebouncedButton {
   uint8_t pin;
   bool rawState;
@@ -41,6 +51,8 @@ float temperatureC = NAN;
 float humidityPercent = NAN;
 int8_t targetTemperatureC = 27;
 char lastAction[16] = "BOOT";
+UiScreen currentScreen = UiScreen::kMain;
+TransmitSelection transmitSelection = TransmitSelection::kOn;
 
 uint8_t previousEncoderState = 0;
 int8_t encoderQuarterSteps = 0;
@@ -75,7 +87,7 @@ bool updateButton(DebouncedButton &button, uint32_t nowMs) {
   return false;
 }
 
-void updateEncoder() {
+int8_t readEncoderChange() {
   static const int8_t transitionTable[16] = {
       0, -1, 1, 0, 1, 0, 0, -1, -1, 0, 0, 1, 0, 1, -1, 0};
 
@@ -83,7 +95,7 @@ void updateEncoder() {
       (static_cast<uint8_t>(digitalRead(kEncoderAPin)) << 1) |
       static_cast<uint8_t>(digitalRead(kEncoderBPin));
   if (currentState == previousEncoderState) {
-    return;
+    return 0;
   }
 
   encoderQuarterSteps +=
@@ -99,12 +111,7 @@ void updateEncoder() {
     encoderQuarterSteps = 0;
   }
 
-  if (change != 0) {
-    targetTemperatureC =
-        constrain(targetTemperatureC + change, 16, 30);
-    snprintf(lastAction, sizeof(lastAction), "ENC %c", change > 0 ? '+' : '-');
-    Serial.printf("Encoder: target=%d C\n", targetTemperatureC);
-  }
+  return change;
 }
 
 void readSensor(uint32_t nowMs) {
@@ -133,10 +140,28 @@ void drawDisplay(uint32_t nowMs) {
   }
 
   lastDisplayDrawMs = nowMs;
-  char line[24];
   oled.clearDisplay();
   oled.setTextSize(1);
   oled.setTextColor(SH110X_WHITE);
+
+  if (currentScreen == UiScreen::kTransmitMenu) {
+    oled.setCursor(0, 0);
+    oled.println("IR TRANSMIT TEST");
+    oled.setCursor(0, 16);
+    oled.println(transmitSelection == TransmitSelection::kOn ? "> AC ON" :
+                                                               "  AC ON");
+    oled.setCursor(0, 29);
+    oled.println(transmitSelection == TransmitSelection::kOff ? "> AC OFF" :
+                                                                "  AC OFF");
+    oled.setCursor(0, 45);
+    oled.println("CONFIRM: SEND");
+    oled.setCursor(0, 56);
+    oled.println("BACK: EXIT");
+    oled.display();
+    return;
+  }
+
+  char line[24];
 
   if (isnan(temperatureC) || isnan(humidityPercent)) {
     snprintf(line, sizeof(line), "SHT40: --.-C --.-%%");
@@ -213,23 +238,61 @@ void setupUiHardware() {
   drawDisplay(millis());
 }
 
-void pollUiHardware() {
+UiCommand pollUiHardware() {
   const uint32_t nowMs = millis();
-  updateEncoder();
+  UiCommand command = UiCommand::kNone;
+  const int8_t encoderChange = readEncoderChange();
+  if (encoderChange != 0) {
+    if (currentScreen == UiScreen::kMain) {
+      targetTemperatureC =
+          constrain(targetTemperatureC + encoderChange, 16, 30);
+      snprintf(lastAction, sizeof(lastAction), "ENC %c",
+               encoderChange > 0 ? '+' : '-');
+      Serial.printf("Encoder: target=%d C\n", targetTemperatureC);
+    } else {
+      transmitSelection = transmitSelection == TransmitSelection::kOn
+                              ? TransmitSelection::kOff
+                              : TransmitSelection::kOn;
+      Serial.printf("IR menu selection: %s\n",
+                    transmitSelection == TransmitSelection::kOn ? "ON" :
+                                                                  "OFF");
+    }
+  }
 
   if (updateButton(encoderPush, nowMs)) {
-    setUiLastAction("PUSH");
-    Serial.println("Button: PUSH");
+    if (currentScreen == UiScreen::kMain) {
+      currentScreen = UiScreen::kTransmitMenu;
+      transmitSelection = TransmitSelection::kOn;
+      setUiLastAction("MENU");
+      Serial.println("Button: PUSH -> IR transmit menu");
+    } else {
+      Serial.println("Button: PUSH (use CONFIRM to send)");
+    }
   }
   if (updateButton(confirmButton, nowMs)) {
-    setUiLastAction("CONFIRM");
-    Serial.println("Button: CONFIRM");
+    if (currentScreen == UiScreen::kTransmitMenu) {
+      command = transmitSelection == TransmitSelection::kOn
+                    ? UiCommand::kSendOn
+                    : UiCommand::kSendOff;
+      Serial.printf("Button: CONFIRM -> send %s\n",
+                    command == UiCommand::kSendOn ? "ON" : "OFF");
+    } else {
+      setUiLastAction("AUTO OFF");
+      Serial.println("Button: CONFIRM -> automatic control is not enabled");
+    }
   }
   if (updateButton(backButton, nowMs)) {
-    setUiLastAction("BACK");
-    Serial.println("Button: BACK");
+    if (currentScreen == UiScreen::kTransmitMenu) {
+      currentScreen = UiScreen::kMain;
+      setUiLastAction("BACK");
+      Serial.println("Button: BACK -> main screen");
+    } else {
+      setUiLastAction("BACK");
+      Serial.println("Button: BACK");
+    }
   }
 
   readSensor(nowMs);
   drawDisplay(nowMs);
+  return command;
 }

@@ -1,5 +1,13 @@
 #pragma once
 
+#include <stdint.h>
+
+enum class UiCommand : uint8_t {
+  kNone,
+  kSendOn,
+  kSendOff,
+};
+
 void setupUiHardware();
-void pollUiHardware();
+UiCommand pollUiHardware();
 void setUiLastAction(const char *action);

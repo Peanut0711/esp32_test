@@ -122,7 +122,14 @@ void setup() {
 
 void loop() {
   pollSerialCommands();
-  pollUiHardware();
+  const UiCommand uiCommand = pollUiHardware();
+  if (uiCommand == UiCommand::kSendOn) {
+    sendRawCommand("on", kAutoOnRaw,
+                   sizeof(kAutoOnRaw) / sizeof(kAutoOnRaw[0]));
+  } else if (uiCommand == UiCommand::kSendOff) {
+    sendRawCommand("off", kAutoOffRaw,
+                   sizeof(kAutoOffRaw) / sizeof(kAutoOffRaw[0]));
+  }
 
   if (irrecv.decode(&results)) {
     Serial.println("\n========== IR received ==========");
