@@ -6,6 +6,7 @@
 #include <ctype.h>
 #include <string.h>
 
+#include "ir_learning.h"
 #include "ir_packets.h"
 #include "ui_hardware.h"
 
@@ -20,7 +21,7 @@ constexpr uint16_t kIrTransmitPin = 4;
 constexpr uint16_t kCaptureBufferSize = 1024;
 // 50 ms ends capture after the usual inter-frame gap, while allowing long frames.
 constexpr uint8_t kReceiveTimeoutMs = 50;
-constexpr size_t kCommandBufferSize = 16;
+constexpr size_t kCommandBufferSize = 64;
 
 IRrecv irrecv(kIrReceivePin, kCaptureBufferSize, kReceiveTimeoutMs, true);
 IRsend irsend(kIrTransmitPin);
@@ -30,7 +31,10 @@ char commandBuffer[kCommandBufferSize];
 size_t commandLength = 0;
 
 void printCommandHelp() {
-  Serial.println("Commands: on, off, help");
+  Serial.println("Commands:");
+  Serial.println("  on | off | help");
+  Serial.println("  learn <label> | cancel");
+  Serial.println("  list | show <label> | export | erase <label>");
 }
 
 void sendRawCommand(const char *name, uint16_t timings[], size_t timingCount) {
@@ -42,10 +46,41 @@ void sendRawCommand(const char *name, uint16_t timings[], size_t timingCount) {
 }
 
 void handleCommand(const char *command) {
-  if (strcmp(command, "on") == 0) {
+  if (strncmp(command, "learn ", 6) == 0) {
+    const char *label = command + 6;
+    if (startIrLearning(label)) {
+      setUiLearningProgress(getIrLearningLabel(), 0,
+                            kLearningSamplesRequired, true);
+    }
+  } else if (strcmp(command, "cancel") == 0) {
+    cancelIrLearning();
+    clearUiLearningStatus();
+    setUiLastAction("CANCEL");
+  } else if (strcmp(command, "list") == 0) {
+    listIrLearningRecords();
+  } else if (strncmp(command, "show ", 5) == 0) {
+    showIrLearningRecord(command + 5);
+  } else if (strcmp(command, "export") == 0) {
+    exportIrLearningRecords();
+  } else if (strncmp(command, "erase ", 6) == 0) {
+    const bool wasActive = isIrLearningActive();
+    if (eraseIrLearningRecord(command + 6) && wasActive &&
+        !isIrLearningActive()) {
+      clearUiLearningStatus();
+      setUiLastAction("ERASED");
+    }
+  } else if (strcmp(command, "on") == 0) {
+    if (isIrLearningActive()) {
+      Serial.println("IR transmit is disabled during learning.");
+      return;
+    }
     sendRawCommand("on", kAutoOnRaw,
                    sizeof(kAutoOnRaw) / sizeof(kAutoOnRaw[0]));
   } else if (strcmp(command, "off") == 0) {
+    if (isIrLearningActive()) {
+      Serial.println("IR transmit is disabled during learning.");
+      return;
+    }
     sendRawCommand("off", kAutoOffRaw,
                    sizeof(kAutoOffRaw) / sizeof(kAutoOffRaw[0]));
   } else if (strcmp(command, "help") == 0) {
@@ -113,6 +148,7 @@ void setup() {
 
   irrecv.enableIRIn();
   irsend.begin();
+  setupIrLearning();
   setupUiHardware();
   Serial.println();
   Serial.println("ESP32-C3 IR receiver/transmitter ready.");
@@ -129,12 +165,29 @@ void loop() {
   } else if (uiCommand == UiCommand::kSendOff) {
     sendRawCommand("off", kAutoOffRaw,
                    sizeof(kAutoOffRaw) / sizeof(kAutoOffRaw[0]));
+  } else if (uiCommand == UiCommand::kCancelLearning) {
+    cancelIrLearning();
+    clearUiLearningStatus();
+    setUiLastAction("CANCEL");
   }
 
   if (irrecv.decode(&results)) {
     Serial.println("\n========== IR received ==========");
-    printDecodedResult(&results);
-    setUiLastAction("IR RX");
+    if (isIrLearningActive()) {
+      Serial.println(resultToHumanReadableBasic(&results));
+      const LearningCaptureResult captureResult =
+          captureIrLearningSample(&results);
+      if (captureResult == LearningCaptureResult::kSaved ||
+          captureResult == LearningCaptureResult::kComplete) {
+        setUiLearningProgress(
+            getIrLearningLabel(), getIrLearningSampleCount(),
+            kLearningSamplesRequired,
+            captureResult != LearningCaptureResult::kComplete);
+      }
+    } else {
+      printDecodedResult(&results);
+      setUiLastAction("IR RX");
+    }
     irrecv.resume();  // Re-arm receiver for the next packet.
   }
 }

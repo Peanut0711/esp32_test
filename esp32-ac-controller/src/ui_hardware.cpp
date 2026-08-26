@@ -53,6 +53,11 @@ int8_t targetTemperatureC = 27;
 char lastAction[16] = "BOOT";
 UiScreen currentScreen = UiScreen::kMain;
 TransmitSelection transmitSelection = TransmitSelection::kOn;
+bool learningStatusVisible = false;
+bool learningAcceptingSignals = false;
+char learningLabel[24] = "";
+uint8_t learningCaptured = 0;
+uint8_t learningRequired = 0;
 
 uint8_t previousEncoderState = 0;
 int8_t encoderQuarterSteps = 0;
@@ -144,6 +149,21 @@ void drawDisplay(uint32_t nowMs) {
   oled.setTextSize(1);
   oled.setTextColor(SH110X_WHITE);
 
+  if (learningStatusVisible) {
+    oled.setCursor(0, 0);
+    oled.println("IR LEARN");
+    oled.setCursor(0, 13);
+    oled.println(learningLabel);
+    oled.setCursor(0, 28);
+    oled.printf("SAMPLE %u / %u", learningCaptured, learningRequired);
+    oled.setCursor(0, 43);
+    oled.println(learningAcceptingSignals ? "PRESS REMOTE" : "LEARNING SAVED");
+    oled.setCursor(0, 56);
+    oled.println(learningAcceptingSignals ? "BACK: CANCEL" : "PUSH: EXIT");
+    oled.display();
+    return;
+  }
+
   if (currentScreen == UiScreen::kTransmitMenu) {
     oled.setCursor(0, 0);
     oled.println("IR TRANSMIT TEST");
@@ -195,6 +215,22 @@ void setUiLastAction(const char *action) {
   snprintf(lastAction, sizeof(lastAction), "%s", action);
 }
 
+void setUiLearningProgress(const char *label, uint8_t captured,
+                           uint8_t required, bool acceptingSignals) {
+  snprintf(learningLabel, sizeof(learningLabel), "%s", label ? label : "");
+  learningCaptured = captured;
+  learningRequired = required;
+  learningAcceptingSignals = acceptingSignals;
+  learningStatusVisible = true;
+  lastDisplayDrawMs = 0;
+}
+
+void clearUiLearningStatus() {
+  learningStatusVisible = false;
+  learningAcceptingSignals = false;
+  lastDisplayDrawMs = 0;
+}
+
 void setupUiHardware() {
   Wire.begin(kSdaPin, kSclPin);
   Wire.setClock(100000);
@@ -242,6 +278,24 @@ UiCommand pollUiHardware() {
   const uint32_t nowMs = millis();
   UiCommand command = UiCommand::kNone;
   const int8_t encoderChange = readEncoderChange();
+  const bool encoderPushPressed = updateButton(encoderPush, nowMs);
+  const bool confirmPressed = updateButton(confirmButton, nowMs);
+  const bool backPressed = updateButton(backButton, nowMs);
+
+  if (learningStatusVisible) {
+    if (learningAcceptingSignals && backPressed) {
+      command = UiCommand::kCancelLearning;
+    } else if (!learningAcceptingSignals &&
+               (encoderPushPressed || confirmPressed || backPressed)) {
+      clearUiLearningStatus();
+      currentScreen = UiScreen::kMain;
+      setUiLastAction("LEARNED");
+    }
+    readSensor(nowMs);
+    drawDisplay(nowMs);
+    return command;
+  }
+
   if (encoderChange != 0) {
     if (currentScreen == UiScreen::kMain) {
       targetTemperatureC =
@@ -259,7 +313,7 @@ UiCommand pollUiHardware() {
     }
   }
 
-  if (updateButton(encoderPush, nowMs)) {
+  if (encoderPushPressed) {
     if (currentScreen == UiScreen::kMain) {
       currentScreen = UiScreen::kTransmitMenu;
       transmitSelection = TransmitSelection::kOn;
@@ -269,7 +323,7 @@ UiCommand pollUiHardware() {
       Serial.println("Button: PUSH (use CONFIRM to send)");
     }
   }
-  if (updateButton(confirmButton, nowMs)) {
+  if (confirmPressed) {
     if (currentScreen == UiScreen::kTransmitMenu) {
       command = transmitSelection == TransmitSelection::kOn
                     ? UiCommand::kSendOn
@@ -281,7 +335,7 @@ UiCommand pollUiHardware() {
       Serial.println("Button: CONFIRM -> automatic control is not enabled");
     }
   }
-  if (updateButton(backButton, nowMs)) {
+  if (backPressed) {
     if (currentScreen == UiScreen::kTransmitMenu) {
       currentScreen = UiScreen::kMain;
       setUiLastAction("BACK");
