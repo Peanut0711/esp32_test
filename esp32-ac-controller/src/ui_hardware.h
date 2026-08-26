@@ -9,6 +9,7 @@ enum class UiCommand : uint8_t {
   kSendOn,
   kSendOff,
   kSendCustom,
+  kSaveAutomaticProfile,
   kStartLearning,
   kStartCustomLearning,
   kEraseCustomLearning,
@@ -50,6 +51,7 @@ const char *getUiLearningRequestLabel();
 const char *getUiTransmitRequestLabel();
 UiTransmitSettings getUiTransmitSettings();
 void setUiTransmitResult(bool sent, const char *label);
+void setUiAutomaticProfileResult(bool saved, const char *label);
 void showUiCustomLearningExists(const char *label);
 void setUiCustomEraseResult(bool erased, const char *label);
 float getUiTemperatureC();

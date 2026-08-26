@@ -36,9 +36,12 @@ size_t commandLength = 0;
 uint16_t learnedTimings[kLearnedTimingCapacity];
 char pendingCustomLearningLabel[32] = "";
 
+bool sendLearnedOnly(const char *label, const char *displayName);
+
 void printCommandHelp() {
   Serial.println("Commands:");
   Serial.println("  on | off | help");
+  Serial.println("  auto info");
   Serial.println("  wifi info | wifi scan | wifi detail");
   Serial.println("  learn <label> | cancel");
   Serial.println("  list | show <label> | export | erase <label>");
@@ -61,9 +64,17 @@ bool sendLearnedCommand(const char *label, const char *displayName,
 }
 
 bool sendConfiguredOn(const char *displayName) {
-  return sendLearnedCommand(
-      kAutomaticOnLabel, displayName, kAutoOnRaw,
-      sizeof(kAutoOnRaw) / sizeof(kAutoOnRaw[0]));
+  const char *profileLabel = getAutomaticOnProfileLabel();
+  if (irLearningRecordExists(profileLabel)) {
+    return sendLearnedOnly(profileLabel, displayName);
+  }
+  if (strcmp(profileLabel, kAutomaticOnLabel) == 0) {
+    return sendLearnedCommand(
+        kAutomaticOnLabel, displayName, kAutoOnRaw,
+        sizeof(kAutoOnRaw) / sizeof(kAutoOnRaw[0]));
+  }
+  Serial.printf("Automatic ON profile is not learned: %s\n", profileLabel);
+  return false;
 }
 
 bool sendConfiguredOff(const char *displayName) {
@@ -164,7 +175,9 @@ bool sendCustomCommand(const UiTransmitSettings &settings,
 }
 
 void handleCommand(const char *command) {
-  if (strcmp(command, "wifi info") == 0) {
+  if (strcmp(command, "auto info") == 0) {
+    printAutomaticControlConfiguration();
+  } else if (strcmp(command, "wifi info") == 0) {
     printWifiCredentialDiagnostics();
   } else if (strcmp(command, "wifi scan") == 0) {
     scanWifiNetworks();
@@ -296,6 +309,17 @@ void loop() {
     const bool sent = !isIrLearningActive() &&
                       sendCustomCommand(getUiTransmitSettings(), label);
     setUiTransmitResult(sent, label);
+  } else if (uiCommand == UiCommand::kSaveAutomaticProfile) {
+    const UiTransmitSettings settings = getUiTransmitSettings();
+    const char *requestedLabel = getUiTransmitRequestLabel();
+    char learnedLabel[32] = "";
+    const bool found = settings.power && findCustomLearnedLabel(
+                                             settings, requestedLabel,
+                                             learnedLabel,
+                                             sizeof(learnedLabel));
+    const bool saved = found && saveAutomaticOnProfileLabel(learnedLabel);
+    setUiAutomaticProfileResult(saved,
+                                found ? learnedLabel : requestedLabel);
   } else if (uiCommand == UiCommand::kStartLearning) {
     const char *label = getUiLearningRequestLabel();
     if (irLearningRecordExists(label)) {

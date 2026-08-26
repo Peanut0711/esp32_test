@@ -43,6 +43,7 @@ enum class MainMenuSelection : uint8_t {
 
 enum class AutomaticSettingSelection : uint8_t {
   kEnabled,
+  kTriggerMode,
   kStartTime,
   kOnTemperature,
   kSave,
@@ -57,6 +58,7 @@ enum class TransmitSettingSelection : uint8_t {
   kSwing,
   kTurbo,
   kSend,
+  kAutoProfile,
   kLearn,
   kCount,
 };
@@ -95,8 +97,10 @@ char automaticControlStatus[16] = "NO WIFI CFG";
 bool automaticClockValid = false;
 AutomaticControlClock automaticClock = {};
 AutomaticNetworkStatus automaticNetwork = {};
-AutomaticControlSettings appliedAutomaticSettings = {true, 6, 0, 28.0F};
-AutomaticControlSettings draftAutomaticSettings = {true, 6, 0, 28.0F};
+AutomaticControlSettings appliedAutomaticSettings = {
+    true, 6, 0, 28.0F, AutomaticTriggerMode::kTimeAndTemperature};
+AutomaticControlSettings draftAutomaticSettings = {
+    true, 6, 0, 28.0F, AutomaticTriggerMode::kTimeAndTemperature};
 UiScreen currentScreen = UiScreen::kMain;
 UiScreen automaticSettingsReturnScreen = UiScreen::kMain;
 MainMenuSelection mainMenuSelection = MainMenuSelection::kTransmit;
@@ -254,6 +258,11 @@ const char *getTransmitFanName(UiTransmitFan fan) {
   return kNames[static_cast<uint8_t>(fan)];
 }
 
+const char *getAutomaticTriggerName(AutomaticTriggerMode mode) {
+  static const char *const kNames[] = {"BOTH", "TIME", "TEMP"};
+  return kNames[static_cast<uint8_t>(mode)];
+}
+
 void buildTransmitRequestLabel() {
   if (!transmitSettings.power) {
     snprintf(transmitRequestLabel, sizeof(transmitRequestLabel), "power_off");
@@ -296,6 +305,7 @@ void adjustTransmitSetting(int8_t change) {
       transmitSettings.turbo = !transmitSettings.turbo;
       break;
     case TransmitSettingSelection::kSend:
+    case TransmitSettingSelection::kAutoProfile:
     case TransmitSettingSelection::kLearn:
     case TransmitSettingSelection::kCount:
       break;
@@ -316,6 +326,9 @@ UiCommand activateTransmitSetting() {
     case TransmitSettingSelection::kSend:
       buildTransmitRequestLabel();
       return UiCommand::kSendCustom;
+    case TransmitSettingSelection::kAutoProfile:
+      buildTransmitRequestLabel();
+      return UiCommand::kSaveAutomaticProfile;
     case TransmitSettingSelection::kLearn:
       buildTransmitRequestLabel();
       return UiCommand::kStartCustomLearning;
@@ -352,6 +365,13 @@ void adjustAutomaticSetting(int8_t change) {
     case AutomaticSettingSelection::kEnabled:
       draftAutomaticSettings.enabled = !draftAutomaticSettings.enabled;
       break;
+    case AutomaticSettingSelection::kTriggerMode:
+      draftAutomaticSettings.triggerMode =
+          static_cast<AutomaticTriggerMode>(wrapValue(
+              static_cast<int8_t>(draftAutomaticSettings.triggerMode) +
+                  change,
+              0, 2));
+      break;
     case AutomaticSettingSelection::kStartTime:
       if (automaticTimeEditField == 0) {
         draftAutomaticSettings.startHour = static_cast<uint8_t>(wrapValue(
@@ -378,6 +398,9 @@ UiCommand activateAutomaticSetting() {
   switch (automaticSettingSelection) {
     case AutomaticSettingSelection::kEnabled:
       draftAutomaticSettings.enabled = !draftAutomaticSettings.enabled;
+      break;
+    case AutomaticSettingSelection::kTriggerMode:
+      automaticSettingEditing = !automaticSettingEditing;
       break;
     case AutomaticSettingSelection::kStartTime:
       if (!automaticSettingEditing) {
@@ -658,29 +681,51 @@ void drawDisplay(uint32_t nowMs) {
   }
 
   if (currentScreen == UiScreen::kAutomaticSettings) {
-    const uint8_t selected =
-        static_cast<uint8_t>(automaticSettingSelection);
-    const char marker = automaticSettingEditing ? '*' : '>';
+    const uint8_t selected = static_cast<uint8_t>(automaticSettingSelection);
+    const uint8_t itemCount =
+        static_cast<uint8_t>(AutomaticSettingSelection::kCount);
+    uint8_t first = selected > 1 ? selected - 1 : 0;
+    if (first + 4 > itemCount) {
+      first = itemCount - 4;
+    }
+
     oled.setCursor(0, 0);
     oled.println("AUTO SETTINGS");
-    oled.setCursor(0, 14);
-    oled.printf("%c ENABLE  %s",
-                selected == 0 ? marker : ' ',
-                draftAutomaticSettings.enabled ? "ON" : "OFF");
-    oled.setCursor(0, 26);
-    oled.printf("%c START   %02u:%02u",
-                selected == 1 ? marker : ' ',
-                draftAutomaticSettings.startHour,
-                draftAutomaticSettings.startMinute);
-    if (selected == 1 && automaticSettingEditing) {
-      oled.printf(" %c", automaticTimeEditField == 0 ? 'H' : 'M');
+    for (uint8_t row = 0; row < 4; ++row) {
+      const uint8_t index = first + row;
+      const char marker = index == selected
+                              ? (automaticSettingEditing ? '*' : '>')
+                              : ' ';
+      oled.setCursor(0, 14 + row * 12);
+      switch (static_cast<AutomaticSettingSelection>(index)) {
+        case AutomaticSettingSelection::kEnabled:
+          oled.printf("%c ENABLE %s", marker,
+                      draftAutomaticSettings.enabled ? "ON" : "OFF");
+          break;
+        case AutomaticSettingSelection::kTriggerMode:
+          oled.printf("%c COND   %s", marker,
+                      getAutomaticTriggerName(
+                          draftAutomaticSettings.triggerMode));
+          break;
+        case AutomaticSettingSelection::kStartTime:
+          oled.printf("%c START  %02u:%02u", marker,
+                      draftAutomaticSettings.startHour,
+                      draftAutomaticSettings.startMinute);
+          if (index == selected && automaticSettingEditing) {
+            oled.printf(" %c", automaticTimeEditField == 0 ? 'H' : 'M');
+          }
+          break;
+        case AutomaticSettingSelection::kOnTemperature:
+          oled.printf("%c TEMP   %.1fC", marker,
+                      draftAutomaticSettings.onTemperatureC);
+          break;
+        case AutomaticSettingSelection::kSave:
+          oled.printf("%c SAVE & EXIT", marker);
+          break;
+        case AutomaticSettingSelection::kCount:
+          break;
+      }
     }
-    oled.setCursor(0, 38);
-    oled.printf("%c ON TEMP %.1fC",
-                selected == 2 ? marker : ' ',
-                draftAutomaticSettings.onTemperatureC);
-    oled.setCursor(0, 50);
-    oled.printf("%c SAVE & EXIT", selected == 3 ? '>' : ' ');
     oled.display();
     return;
   }
@@ -729,6 +774,9 @@ void drawDisplay(uint32_t nowMs) {
           break;
         case TransmitSettingSelection::kSend:
           oled.printf("%c SEND", marker);
+          break;
+        case TransmitSettingSelection::kAutoProfile:
+          oled.printf("%c SET AUTO PROFILE", marker);
           break;
         case TransmitSettingSelection::kLearn:
           oled.printf("%c LEARN CURRENT", marker);
@@ -807,10 +855,23 @@ void drawDisplay(uint32_t nowMs) {
   oled.setCursor(0, 26);
   oled.printf("AUTO:%s", automaticControlStatus);
 
-  snprintf(line, sizeof(line), "ON>%.1f FROM %02u:%02u",
-           appliedAutomaticSettings.onTemperatureC,
-           appliedAutomaticSettings.startHour,
-           appliedAutomaticSettings.startMinute);
+  switch (appliedAutomaticSettings.triggerMode) {
+    case AutomaticTriggerMode::kTimeAndTemperature:
+      snprintf(line, sizeof(line), "BOTH %.1fC %02u:%02u",
+               appliedAutomaticSettings.onTemperatureC,
+               appliedAutomaticSettings.startHour,
+               appliedAutomaticSettings.startMinute);
+      break;
+    case AutomaticTriggerMode::kTimeOnly:
+      snprintf(line, sizeof(line), "TIME AT %02u:%02u",
+               appliedAutomaticSettings.startHour,
+               appliedAutomaticSettings.startMinute);
+      break;
+    case AutomaticTriggerMode::kTemperatureOnly:
+      snprintf(line, sizeof(line), "TEMP OVER %.1fC",
+               appliedAutomaticSettings.onTemperatureC);
+      break;
+  }
   oled.setCursor(0, 39);
   oled.println(line);
 
@@ -867,6 +928,15 @@ void setUiTransmitResult(bool sent, const char *label) {
   lastDisplayDrawMs = 0;
 }
 
+void setUiAutomaticProfileResult(bool saved, const char *label) {
+  snprintf(transmitFeedback, sizeof(transmitFeedback), "%s",
+           saved ? "AUTO PROFILE: SAVED" : "AUTO PROFILE: NO IR");
+  setUiLastAction(saved ? "PROFILE SAVED" : "PROFILE ERROR");
+  Serial.printf("Automatic profile %s: %s\n", saved ? "saved" : "rejected",
+                label ? label : "");
+  lastDisplayDrawMs = 0;
+}
+
 void showUiCustomLearningExists(const char *label) {
   snprintf(customRecordLabel, sizeof(customRecordLabel), "%s",
            label ? label : "");
@@ -906,6 +976,7 @@ void setUiAutomaticControlState(
       appliedAutomaticSettings.startHour == settings.startHour &&
       appliedAutomaticSettings.startMinute == settings.startMinute &&
       appliedAutomaticSettings.onTemperatureC == settings.onTemperatureC &&
+      appliedAutomaticSettings.triggerMode == settings.triggerMode &&
       automaticNetwork.configured == network.configured &&
       automaticNetwork.connected == network.connected &&
       automaticNetwork.rssiDbm == network.rssiDbm &&

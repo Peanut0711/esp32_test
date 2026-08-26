@@ -7,11 +7,18 @@ enum class AutomaticControlCommand : uint8_t {
   kSendOn,
 };
 
+enum class AutomaticTriggerMode : uint8_t {
+  kTimeAndTemperature,
+  kTimeOnly,
+  kTemperatureOnly,
+};
+
 struct AutomaticControlSettings {
   bool enabled;
   uint8_t startHour;
   uint8_t startMinute;
   float onTemperatureC;
+  AutomaticTriggerMode triggerMode;
 };
 
 struct AutomaticControlClock {
@@ -36,6 +43,9 @@ void markAutomaticOnSent();
 const char *getAutomaticControlStatus();
 AutomaticControlSettings getAutomaticControlSettings();
 bool saveAutomaticControlSettings(const AutomaticControlSettings &settings);
+const char *getAutomaticOnProfileLabel();
+bool saveAutomaticOnProfileLabel(const char *label);
+void printAutomaticControlConfiguration();
 bool getAutomaticControlClock(AutomaticControlClock *clock);
 AutomaticNetworkStatus getAutomaticNetworkStatus();
 void printWifiCredentialDiagnostics();

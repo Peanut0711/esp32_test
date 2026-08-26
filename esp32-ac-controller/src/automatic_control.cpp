@@ -7,6 +7,7 @@
 #include <esp_err.h>
 #include <esp_system.h>
 #include <esp_wifi.h>
+#include <ctype.h>
 #include <math.h>
 #include <mbedtls/sha256.h>
 #include <string.h>
@@ -26,6 +27,8 @@ namespace {
 constexpr uint32_t kWifiRetryIntervalMs = 30000;
 constexpr char kKoreanTimezone[] = "KST-9";
 constexpr char kPreferencesNamespace[] = "ac-auto";
+constexpr char kDefaultAutomaticProfile[] =
+    "cool_27_f1_swing_on_turbo_off";
 constexpr char kCredentialFingerprintPrefix[] =
     "esp32-ac-controller:wifi:v1";
 constexpr uint32_t kWifiDiagnosticTimeoutMs = 15000;
@@ -34,10 +37,14 @@ constexpr uint16_t kWifiDiagnosticMaxAccessPoints = 8;
 // 8.5 dBm is the highest level reported stable on the affected boards.
 constexpr wifi_power_t kWifiTransmitPower = WIFI_POWER_8_5dBm;
 
-AutomaticControlSettings automaticSettings = {true, 6, 0, 28.0F};
+AutomaticControlSettings automaticSettings = {
+    true, 6, 0, 28.0F, AutomaticTriggerMode::kTimeAndTemperature};
+char automaticOnProfileLabel[32] = "cool_27_f1_swing_on_turbo_off";
 bool wifiConfigured = false;
 bool ntpConfigured = false;
 int32_t lastSentDayKey = -1;
+bool temperatureTriggerLatched = false;
+uint32_t lastAutomaticAttemptMs = 0;
 uint32_t lastWifiAttemptMs = 0;
 char statusText[16] = "DISABLED";
 bool wifiDiagnosticActive = false;
@@ -293,7 +300,22 @@ int32_t makeDayKey(const tm &localTime) {
 bool settingsAreValid(const AutomaticControlSettings &settings) {
   return settings.startHour <= 23 && settings.startMinute <= 59 &&
          settings.onTemperatureC >= 16.0F &&
-         settings.onTemperatureC <= 35.0F;
+         settings.onTemperatureC <= 35.0F &&
+         static_cast<uint8_t>(settings.triggerMode) <=
+             static_cast<uint8_t>(AutomaticTriggerMode::kTemperatureOnly);
+}
+
+bool profileLabelIsValid(const char *label) {
+  if (!label || !label[0] || strlen(label) >= sizeof(automaticOnProfileLabel)) {
+    return false;
+  }
+  for (const char *cursor = label; *cursor; ++cursor) {
+    const unsigned char value = static_cast<unsigned char>(*cursor);
+    if (!isalnum(value) && value != '_' && value != '-') {
+      return false;
+    }
+  }
+  return true;
 }
 
 void loadSettings() {
@@ -307,12 +329,22 @@ void loadSettings() {
       preferences.getBool("enabled", automaticSettings.enabled),
       preferences.getUChar("hour", automaticSettings.startHour),
       preferences.getUChar("minute", automaticSettings.startMinute),
-      preferences.getFloat("temp", automaticSettings.onTemperatureC)};
+      preferences.getFloat("temp", automaticSettings.onTemperatureC),
+      static_cast<AutomaticTriggerMode>(preferences.getUChar(
+          "mode", static_cast<uint8_t>(automaticSettings.triggerMode)))};
+  const String loadedProfile =
+      preferences.getString("profile", kDefaultAutomaticProfile);
   preferences.end();
   if (settingsAreValid(loaded)) {
     automaticSettings = loaded;
   } else {
     Serial.println("Invalid automatic settings found; using defaults.");
+  }
+  if (profileLabelIsValid(loadedProfile.c_str())) {
+    snprintf(automaticOnProfileLabel, sizeof(automaticOnProfileLabel), "%s",
+             loadedProfile.c_str());
+  } else {
+    Serial.println("Invalid automatic profile found; using default.");
   }
 }
 
@@ -320,15 +352,12 @@ void loadSettings() {
 
 void setupAutomaticControl() {
   loadSettings();
-  Serial.printf("Automatic settings: %s, start %02u:%02u, ON > %.1f C\n",
-                automaticSettings.enabled ? "ON" : "OFF",
-                automaticSettings.startHour, automaticSettings.startMinute,
-                automaticSettings.onTemperatureC);
+  printAutomaticControlConfiguration();
 
   wifiConfigured = kWifiSsid[0] != '\0';
   if (!wifiConfigured) {
-    Serial.println(
-        "Automatic control disabled: create include/wifi_secrets.h first.");
+    Serial.println("Wi-Fi time features unavailable: create "
+                   "include/wifi_secrets.h first.");
     setStatus("NO WIFI CFG");
     return;
   }
@@ -346,37 +375,66 @@ void setupAutomaticControl() {
 }
 
 AutomaticControlCommand pollAutomaticControl(float temperatureC) {
-  if (!wifiConfigured) {
-    return AutomaticControlCommand::kNone;
-  }
-
   const uint32_t nowMs = millis();
-  if (WiFi.status() != WL_CONNECTED) {
+  const bool temperatureOnly =
+      automaticSettings.triggerMode == AutomaticTriggerMode::kTemperatureOnly;
+  bool clockReady = false;
+  tm localTime = {};
+
+  if (wifiConfigured && WiFi.status() != WL_CONNECTED) {
     ntpConfigured = false;
-    setStatus("WIFI WAIT");
     if (nowMs - lastWifiAttemptMs >= kWifiRetryIntervalMs) {
       startWifi(nowMs);
     }
-    return AutomaticControlCommand::kNone;
-  }
-
-  if (!ntpConfigured) {
-    configTzTime(kKoreanTimezone, "pool.ntp.org", "time.google.com",
-                 "time.cloudflare.com");
-    ntpConfigured = true;
-    Serial.print("Wi-Fi connected. IP: ");
-    Serial.println(WiFi.localIP());
-    Serial.println("NTP synchronization requested (Asia/Seoul).");
-  }
-
-  tm localTime = {};
-  if (!readKoreanTime(&localTime)) {
-    setStatus("TIME SYNC");
-    return AutomaticControlCommand::kNone;
+  } else if (wifiConfigured) {
+    if (!ntpConfigured) {
+      configTzTime(kKoreanTimezone, "pool.ntp.org", "time.google.com",
+                   "time.cloudflare.com");
+      ntpConfigured = true;
+      Serial.print("Wi-Fi connected. IP: ");
+      Serial.println(WiFi.localIP());
+      Serial.println("NTP synchronization requested (Asia/Seoul).");
+    }
+    clockReady = readKoreanTime(&localTime);
   }
 
   if (!automaticSettings.enabled) {
     setStatus("AUTO OFF");
+    return AutomaticControlCommand::kNone;
+  }
+
+  if (temperatureOnly) {
+    if (isnan(temperatureC)) {
+      setStatus("SENSOR ERR");
+      return AutomaticControlCommand::kNone;
+    }
+    if (temperatureC <= automaticSettings.onTemperatureC - 0.5F) {
+      temperatureTriggerLatched = false;
+    }
+    if (temperatureTriggerLatched) {
+      setStatus("TEMP SENT");
+      return AutomaticControlCommand::kNone;
+    }
+    if (temperatureC > automaticSettings.onTemperatureC) {
+      if (nowMs - lastAutomaticAttemptMs < 30000 &&
+          lastAutomaticAttemptMs != 0) {
+        setStatus("ON READY");
+        return AutomaticControlCommand::kNone;
+      }
+      lastAutomaticAttemptMs = nowMs;
+      setStatus("ON READY");
+      return AutomaticControlCommand::kSendOn;
+    }
+    setStatus("TEMP WAIT");
+    return AutomaticControlCommand::kNone;
+  }
+
+  if (!wifiConfigured || WiFi.status() != WL_CONNECTED) {
+    setStatus(wifiConfigured ? "WIFI WAIT" : "NO WIFI CFG");
+    return AutomaticControlCommand::kNone;
+  }
+  if (!clockReady) {
+    setStatus("TIME SYNC");
     return AutomaticControlCommand::kNone;
   }
 
@@ -396,12 +454,29 @@ AutomaticControlCommand pollAutomaticControl(float temperatureC) {
     return AutomaticControlCommand::kNone;
   }
 
+  if (automaticSettings.triggerMode == AutomaticTriggerMode::kTimeOnly) {
+    if (nowMs - lastAutomaticAttemptMs < 30000 &&
+        lastAutomaticAttemptMs != 0) {
+      setStatus("ON READY");
+      return AutomaticControlCommand::kNone;
+    }
+    lastAutomaticAttemptMs = nowMs;
+    setStatus("ON READY");
+    return AutomaticControlCommand::kSendOn;
+  }
+
   if (isnan(temperatureC)) {
     setStatus("SENSOR ERR");
     return AutomaticControlCommand::kNone;
   }
 
   if (temperatureC > automaticSettings.onTemperatureC) {
+    if (nowMs - lastAutomaticAttemptMs < 30000 &&
+        lastAutomaticAttemptMs != 0) {
+      setStatus("ON READY");
+      return AutomaticControlCommand::kNone;
+    }
+    lastAutomaticAttemptMs = nowMs;
     setStatus("ON READY");
     return AutomaticControlCommand::kSendOn;
   }
@@ -415,6 +490,7 @@ void markAutomaticOnSent() {
   if (readKoreanTime(&localTime)) {
     lastSentDayKey = makeDayKey(localTime);
   }
+  temperatureTriggerLatched = true;
   setStatus("ON SENT");
 }
 
@@ -437,11 +513,14 @@ bool saveAutomaticControlSettings(
     return false;
   }
 
-  const bool saved = preferences.putBool("enabled", settings.enabled) == 1 &&
-                     preferences.putUChar("hour", settings.startHour) == 1 &&
-                     preferences.putUChar("minute", settings.startMinute) == 1 &&
-                     preferences.putFloat("temp", settings.onTemperatureC) ==
-                         sizeof(float);
+  bool saved = preferences.putBool("enabled", settings.enabled) == 1;
+  saved = (preferences.putUChar("hour", settings.startHour) == 1) && saved;
+  saved = (preferences.putUChar("minute", settings.startMinute) == 1) && saved;
+  saved = (preferences.putFloat("temp", settings.onTemperatureC) ==
+           sizeof(float)) && saved;
+  saved = (preferences.putUChar(
+               "mode", static_cast<uint8_t>(settings.triggerMode)) == 1) &&
+          saved;
   preferences.end();
   if (!saved) {
     Serial.println("Automatic settings save failed.");
@@ -449,11 +528,53 @@ bool saveAutomaticControlSettings(
   }
 
   automaticSettings = settings;
-  Serial.printf("Automatic settings saved: %s, start %02u:%02u, ON > %.1f C\n",
+  lastAutomaticAttemptMs = 0;
+  Serial.printf("Automatic settings saved: %s, mode %u, start %02u:%02u, "
+                "ON > %.1f C\n",
                 automaticSettings.enabled ? "ON" : "OFF",
+                static_cast<uint8_t>(automaticSettings.triggerMode),
                 automaticSettings.startHour, automaticSettings.startMinute,
                 automaticSettings.onTemperatureC);
   return true;
+}
+
+const char *getAutomaticOnProfileLabel() { return automaticOnProfileLabel; }
+
+bool saveAutomaticOnProfileLabel(const char *label) {
+  if (!profileLabelIsValid(label)) {
+    Serial.println("Automatic profile rejected: invalid label.");
+    return false;
+  }
+
+  Preferences preferences;
+  if (!preferences.begin(kPreferencesNamespace, false)) {
+    Serial.println("Automatic profile storage unavailable.");
+    return false;
+  }
+  const bool saved = preferences.putString("profile", label) == strlen(label);
+  preferences.end();
+  if (!saved) {
+    Serial.println("Automatic profile save failed.");
+    return false;
+  }
+
+  snprintf(automaticOnProfileLabel, sizeof(automaticOnProfileLabel), "%s",
+           label);
+  lastAutomaticAttemptMs = 0;
+  Serial.printf("Automatic ON profile saved: %s\n", automaticOnProfileLabel);
+  return true;
+}
+
+void printAutomaticControlConfiguration() {
+  static const char *const kModeNames[] = {"BOTH", "TIME", "TEMP"};
+  Serial.println("Automatic control configuration:");
+  Serial.printf("  enabled : %s\n", automaticSettings.enabled ? "ON" : "OFF");
+  Serial.printf("  mode    : %s\n",
+                kModeNames[static_cast<uint8_t>(automaticSettings.triggerMode)]);
+  Serial.printf("  start   : %02u:%02u\n", automaticSettings.startHour,
+                automaticSettings.startMinute);
+  Serial.printf("  temp    : %.1f C\n", automaticSettings.onTemperatureC);
+  Serial.printf("  profile : %s\n", automaticOnProfileLabel);
 }
 
 bool getAutomaticControlClock(AutomaticControlClock *clock) {
