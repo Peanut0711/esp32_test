@@ -165,6 +165,15 @@ void loop() {
   } else if (uiCommand == UiCommand::kSendOff) {
     sendRawCommand("off", kAutoOffRaw,
                    sizeof(kAutoOffRaw) / sizeof(kAutoOffRaw[0]));
+  } else if (uiCommand == UiCommand::kStartLearning) {
+    const char *label = getUiLearningRequestLabel();
+    if (startIrLearning(label)) {
+      setUiLearningProgress(getIrLearningLabel(), 0,
+                            kLearningSamplesRequired, true);
+    } else {
+      showUiLearningStartError(label);
+      setUiLastAction("LEARN ERR");
+    }
   } else if (uiCommand == UiCommand::kCancelLearning) {
     cancelIrLearning();
     clearUiLearningStatus();

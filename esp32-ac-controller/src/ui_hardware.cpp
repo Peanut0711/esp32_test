@@ -19,16 +19,36 @@ constexpr uint8_t kOledAddress = 0x3C;
 constexpr uint8_t kSht40Address = 0x44;
 constexpr uint32_t kButtonDebounceMs = 25;
 constexpr uint32_t kSensorIntervalMs = 1000;
+constexpr uint32_t kSensorLogIntervalMs = 10000;
 constexpr uint32_t kDisplayIntervalMs = 100;
 
 enum class UiScreen : uint8_t {
   kMain,
+  kMainMenu,
   kTransmitMenu,
+  kLearnCategory,
+  kLearnTarget,
+};
+
+enum class MainMenuSelection : uint8_t {
+  kTransmit,
+  kLearn,
 };
 
 enum class TransmitSelection : uint8_t {
   kOn,
   kOff,
+};
+
+enum class LearnCategory : uint8_t {
+  kPower,
+  kMode,
+  kTemperature,
+  kFan,
+  kSwing,
+  kTurbo,
+  kTimer,
+  kCount,
 };
 
 struct DebouncedButton {
@@ -52,16 +72,23 @@ float humidityPercent = NAN;
 int8_t targetTemperatureC = 27;
 char lastAction[16] = "BOOT";
 UiScreen currentScreen = UiScreen::kMain;
+MainMenuSelection mainMenuSelection = MainMenuSelection::kTransmit;
 TransmitSelection transmitSelection = TransmitSelection::kOn;
+LearnCategory learnCategory = LearnCategory::kPower;
+int8_t learnTargetValues[static_cast<uint8_t>(LearnCategory::kCount)] = {
+    1, 0, 26, 0, 1, 0, 0};
+char learningRequestLabel[32] = "";
 bool learningStatusVisible = false;
 bool learningAcceptingSignals = false;
-char learningLabel[24] = "";
+bool learningStartError = false;
+char learningLabel[32] = "";
 uint8_t learningCaptured = 0;
 uint8_t learningRequired = 0;
 
 uint8_t previousEncoderState = 0;
 int8_t encoderQuarterSteps = 0;
 uint32_t lastSensorReadMs = 0;
+uint32_t lastSensorLogMs = 0;
 uint32_t lastDisplayDrawMs = 0;
 
 bool probeI2cAddress(uint8_t address) {
@@ -119,6 +146,165 @@ int8_t readEncoderChange() {
   return change;
 }
 
+const char *getLearnCategoryName(LearnCategory category) {
+  switch (category) {
+    case LearnCategory::kPower:
+      return "POWER";
+    case LearnCategory::kMode:
+      return "MODE";
+    case LearnCategory::kTemperature:
+      return "TEMP";
+    case LearnCategory::kFan:
+      return "FAN";
+    case LearnCategory::kSwing:
+      return "SWING";
+    case LearnCategory::kTurbo:
+      return "TURBO";
+    case LearnCategory::kTimer:
+      return "TIME OFF";
+    case LearnCategory::kCount:
+      break;
+  }
+  return "?";
+}
+
+int8_t wrapValue(int8_t value, int8_t minimum, int8_t maximum) {
+  if (value > maximum) {
+    return minimum;
+  }
+  if (value < minimum) {
+    return maximum;
+  }
+  return value;
+}
+
+void adjustLearnTarget(int8_t change) {
+  const uint8_t index = static_cast<uint8_t>(learnCategory);
+  int8_t minimum = 0;
+  int8_t maximum = 1;
+  switch (learnCategory) {
+    case LearnCategory::kMode:
+      maximum = 2;
+      break;
+    case LearnCategory::kTemperature:
+      minimum = 16;
+      maximum = 30;
+      break;
+    case LearnCategory::kFan:
+      maximum = 3;
+      break;
+    case LearnCategory::kTimer:
+      maximum = 9;
+      break;
+    default:
+      break;
+  }
+  learnTargetValues[index] =
+      wrapValue(learnTargetValues[index] + change, minimum, maximum);
+}
+
+const char *formatLearnTarget(char *buffer, size_t bufferSize) {
+  const int8_t value = learnTargetValues[static_cast<uint8_t>(learnCategory)];
+  static const char *const kModeNames[] = {"COOL", "FAN", "HEAT"};
+  static const char *const kFanNames[] = {"F1", "F2", "F3", "AUTO"};
+
+  switch (learnCategory) {
+    case LearnCategory::kPower:
+      snprintf(buffer, bufferSize, "%s", value ? "ON" : "OFF");
+      break;
+    case LearnCategory::kMode:
+      snprintf(buffer, bufferSize, "%s", kModeNames[value]);
+      break;
+    case LearnCategory::kTemperature:
+      snprintf(buffer, bufferSize, "%dC", value);
+      break;
+    case LearnCategory::kFan:
+      snprintf(buffer, bufferSize, "%s", kFanNames[value]);
+      break;
+    case LearnCategory::kSwing:
+    case LearnCategory::kTurbo:
+      snprintf(buffer, bufferSize, "%s", value ? "ON" : "OFF");
+      break;
+    case LearnCategory::kTimer:
+      if (value) {
+        snprintf(buffer, bufferSize, "%dH", value);
+      } else {
+        snprintf(buffer, bufferSize, "OFF");
+      }
+      break;
+    case LearnCategory::kCount:
+      snprintf(buffer, bufferSize, "?");
+      break;
+  }
+  return buffer;
+}
+
+const char *getLearnBaseContext() {
+  switch (learnCategory) {
+    case LearnCategory::kPower:
+      return "BASE:C27 F1 SW1";
+    case LearnCategory::kMode:
+      return "BASE:27 F1 SW1";
+    case LearnCategory::kTemperature:
+      return "BASE:C F1 SW1 TB0";
+    case LearnCategory::kFan:
+      return "BASE:C27 SW1 TB0";
+    case LearnCategory::kSwing:
+      return "BASE:C27 F1 TB0";
+    case LearnCategory::kTurbo:
+    case LearnCategory::kTimer:
+      return "BASE:C27 F1 SW1";
+    case LearnCategory::kCount:
+      break;
+  }
+  return "";
+}
+
+void buildLearningRequestLabel() {
+  const int8_t value = learnTargetValues[static_cast<uint8_t>(learnCategory)];
+  static const char *const kModeLabels[] = {"cool", "fan", "heat"};
+  static const char *const kFanLabels[] = {"f1", "f2", "f3", "fauto"};
+
+  switch (learnCategory) {
+    case LearnCategory::kPower:
+      snprintf(learningRequestLabel, sizeof(learningRequestLabel), "power_%s",
+               value ? "on" : "off");
+      break;
+    case LearnCategory::kMode:
+      snprintf(learningRequestLabel, sizeof(learningRequestLabel),
+               "mode_%s_27_f1_swing_on", kModeLabels[value]);
+      break;
+    case LearnCategory::kTemperature:
+      snprintf(learningRequestLabel, sizeof(learningRequestLabel),
+               "cool_%d_f1_swing_on", value);
+      break;
+    case LearnCategory::kFan:
+      snprintf(learningRequestLabel, sizeof(learningRequestLabel),
+               "cool_27_%s_swing_on", kFanLabels[value]);
+      break;
+    case LearnCategory::kSwing:
+      snprintf(learningRequestLabel, sizeof(learningRequestLabel),
+               "cool_27_f1_swing_%s", value ? "on" : "off");
+      break;
+    case LearnCategory::kTurbo:
+      snprintf(learningRequestLabel, sizeof(learningRequestLabel),
+               "cool_27_f1_swing_on_turbo_%s", value ? "on" : "off");
+      break;
+    case LearnCategory::kTimer:
+      if (value) {
+        snprintf(learningRequestLabel, sizeof(learningRequestLabel),
+                 "cool_27_f1_swing_on_timer_%dh", value);
+      } else {
+        snprintf(learningRequestLabel, sizeof(learningRequestLabel),
+                 "cool_27_f1_swing_on_timer_off");
+      }
+      break;
+    case LearnCategory::kCount:
+      learningRequestLabel[0] = '\0';
+      break;
+  }
+}
+
 void readSensor(uint32_t nowMs) {
   if (!sht40Ready || nowMs - lastSensorReadMs < kSensorIntervalMs) {
     return;
@@ -130,8 +316,11 @@ void readSensor(uint32_t nowMs) {
   if (sht40.getEvent(&humidityEvent, &temperatureEvent)) {
     temperatureC = temperatureEvent.temperature;
     humidityPercent = humidityEvent.relative_humidity;
-    Serial.printf("SHT40: %.2f C, %.2f %%RH\n", temperatureC,
-                  humidityPercent);
+    if (nowMs - lastSensorLogMs >= kSensorLogIntervalMs) {
+      lastSensorLogMs = nowMs;
+      Serial.printf("SHT40: %.2f C, %.2f %%RH\n", temperatureC,
+                    humidityPercent);
+    }
   } else {
     temperatureC = NAN;
     humidityPercent = NAN;
@@ -148,18 +337,47 @@ void drawDisplay(uint32_t nowMs) {
   oled.clearDisplay();
   oled.setTextSize(1);
   oled.setTextColor(SH110X_WHITE);
+  oled.setTextWrap(false);
 
   if (learningStatusVisible) {
     oled.setCursor(0, 0);
-    oled.println("IR LEARN");
+    oled.println(learningStartError ? "IR LEARN FAILED" : "IR LEARN");
     oled.setCursor(0, 13);
     oled.println(learningLabel);
+    if (learningStartError) {
+      oled.setCursor(0, 28);
+      oled.println("ALREADY SAVED?");
+      oled.setCursor(0, 43);
+      oled.println("CHECK SERIAL / ERASE");
+      oled.setCursor(0, 56);
+      oled.println("ANY BUTTON: BACK");
+      oled.display();
+      return;
+    }
     oled.setCursor(0, 28);
     oled.printf("SAMPLE %u / %u", learningCaptured, learningRequired);
     oled.setCursor(0, 43);
     oled.println(learningAcceptingSignals ? "PRESS REMOTE" : "LEARNING SAVED");
     oled.setCursor(0, 56);
-    oled.println(learningAcceptingSignals ? "BACK: CANCEL" : "PUSH: EXIT");
+    oled.println(learningAcceptingSignals ? "BACK: CANCEL"
+                                          : "P:NEXT C:STAY B:TYPE");
+    oled.display();
+    return;
+  }
+
+  if (currentScreen == UiScreen::kMainMenu) {
+    oled.setCursor(0, 0);
+    oled.println("MAIN MENU");
+    oled.setCursor(0, 18);
+    oled.println(mainMenuSelection == MainMenuSelection::kTransmit
+                     ? "> IR TRANSMIT"
+                     : "  IR TRANSMIT");
+    oled.setCursor(0, 34);
+    oled.println(mainMenuSelection == MainMenuSelection::kLearn
+                     ? "> IR LEARN"
+                     : "  IR LEARN");
+    oled.setCursor(0, 54);
+    oled.println("PUSH:ENTER BACK:EXIT");
     oled.display();
     return;
   }
@@ -177,6 +395,42 @@ void drawDisplay(uint32_t nowMs) {
     oled.println("CONFIRM: SEND");
     oled.setCursor(0, 56);
     oled.println("BACK: EXIT");
+    oled.display();
+    return;
+  }
+
+  if (currentScreen == UiScreen::kLearnCategory) {
+    const uint8_t selected = static_cast<uint8_t>(learnCategory);
+    const uint8_t categoryCount = static_cast<uint8_t>(LearnCategory::kCount);
+    uint8_t first = selected > 1 ? selected - 1 : 0;
+    if (first + 4 > categoryCount) {
+      first = categoryCount - 4;
+    }
+
+    oled.setCursor(0, 0);
+    oled.println("IR LEARN TYPE");
+    for (uint8_t row = 0; row < 4; ++row) {
+      const uint8_t index = first + row;
+      oled.setCursor(0, 14 + row * 12);
+      oled.printf("%c %s", index == selected ? '>' : ' ',
+                  getLearnCategoryName(static_cast<LearnCategory>(index)));
+    }
+    oled.display();
+    return;
+  }
+
+  if (currentScreen == UiScreen::kLearnTarget) {
+    char target[12];
+    oled.setCursor(0, 0);
+    oled.printf("LEARN %s", getLearnCategoryName(learnCategory));
+    oled.setCursor(0, 15);
+    oled.printf("TARGET: %s", formatLearnTarget(target, sizeof(target)));
+    oled.setCursor(0, 29);
+    oled.println(getLearnBaseContext());
+    oled.setCursor(0, 43);
+    oled.println("ARM, THEN SET TARGET");
+    oled.setCursor(0, 56);
+    oled.println("CONFIRM:START BACK");
     oled.display();
     return;
   }
@@ -221,6 +475,15 @@ void setUiLearningProgress(const char *label, uint8_t captured,
   learningCaptured = captured;
   learningRequired = required;
   learningAcceptingSignals = acceptingSignals;
+  learningStartError = false;
+  learningStatusVisible = true;
+  lastDisplayDrawMs = 0;
+}
+
+void showUiLearningStartError(const char *label) {
+  snprintf(learningLabel, sizeof(learningLabel), "%s", label ? label : "");
+  learningStartError = true;
+  learningAcceptingSignals = false;
   learningStatusVisible = true;
   lastDisplayDrawMs = 0;
 }
@@ -228,8 +491,11 @@ void setUiLearningProgress(const char *label, uint8_t captured,
 void clearUiLearningStatus() {
   learningStatusVisible = false;
   learningAcceptingSignals = false;
+  learningStartError = false;
   lastDisplayDrawMs = 0;
 }
+
+const char *getUiLearningRequestLabel() { return learningRequestLabel; }
 
 void setupUiHardware() {
   Wire.begin(kSdaPin, kSclPin);
@@ -283,13 +549,34 @@ UiCommand pollUiHardware() {
   const bool backPressed = updateButton(backButton, nowMs);
 
   if (learningStatusVisible) {
-    if (learningAcceptingSignals && backPressed) {
-      command = UiCommand::kCancelLearning;
-    } else if (!learningAcceptingSignals &&
-               (encoderPushPressed || confirmPressed || backPressed)) {
+    if (learningStartError &&
+        (encoderPushPressed || confirmPressed || backPressed)) {
       clearUiLearningStatus();
-      currentScreen = UiScreen::kMain;
-      setUiLastAction("LEARNED");
+      setUiLastAction("LEARN ERR");
+    } else if (learningAcceptingSignals && backPressed) {
+      command = UiCommand::kCancelLearning;
+    } else if (!learningAcceptingSignals) {
+      if (encoderPushPressed) {
+        clearUiLearningStatus();
+        if (currentScreen == UiScreen::kLearnTarget) {
+          adjustLearnTarget(1);
+        } else {
+          currentScreen = UiScreen::kMain;
+        }
+        setUiLastAction("NEXT");
+      } else if (confirmPressed) {
+        clearUiLearningStatus();
+        if (currentScreen != UiScreen::kLearnTarget) {
+          currentScreen = UiScreen::kMain;
+        }
+        setUiLastAction("LEARNED");
+      } else if (backPressed) {
+        clearUiLearningStatus();
+        currentScreen = currentScreen == UiScreen::kLearnTarget
+                            ? UiScreen::kLearnCategory
+                            : UiScreen::kMain;
+        setUiLastAction("BACK");
+      }
     }
     readSensor(nowMs);
     drawDisplay(nowMs);
@@ -297,53 +584,113 @@ UiCommand pollUiHardware() {
   }
 
   if (encoderChange != 0) {
-    if (currentScreen == UiScreen::kMain) {
-      targetTemperatureC =
-          constrain(targetTemperatureC + encoderChange, 16, 30);
-      snprintf(lastAction, sizeof(lastAction), "ENC %c",
-               encoderChange > 0 ? '+' : '-');
-      Serial.printf("Encoder: target=%d C\n", targetTemperatureC);
-    } else {
-      transmitSelection = transmitSelection == TransmitSelection::kOn
-                              ? TransmitSelection::kOff
-                              : TransmitSelection::kOn;
-      Serial.printf("IR menu selection: %s\n",
-                    transmitSelection == TransmitSelection::kOn ? "ON" :
-                                                                  "OFF");
+    switch (currentScreen) {
+      case UiScreen::kMain:
+        targetTemperatureC =
+            constrain(targetTemperatureC + encoderChange, 16, 30);
+        snprintf(lastAction, sizeof(lastAction), "ENC %c",
+                 encoderChange > 0 ? '+' : '-');
+        Serial.printf("Encoder: target=%d C\n", targetTemperatureC);
+        break;
+      case UiScreen::kMainMenu:
+        mainMenuSelection = mainMenuSelection == MainMenuSelection::kTransmit
+                                ? MainMenuSelection::kLearn
+                                : MainMenuSelection::kTransmit;
+        break;
+      case UiScreen::kTransmitMenu:
+        transmitSelection = transmitSelection == TransmitSelection::kOn
+                                ? TransmitSelection::kOff
+                                : TransmitSelection::kOn;
+        break;
+      case UiScreen::kLearnCategory: {
+        const int8_t categoryCount =
+            static_cast<int8_t>(LearnCategory::kCount);
+        const int8_t selected = wrapValue(
+            static_cast<int8_t>(learnCategory) + encoderChange, 0,
+            categoryCount - 1);
+        learnCategory = static_cast<LearnCategory>(selected);
+        break;
+      }
+      case UiScreen::kLearnTarget:
+        adjustLearnTarget(encoderChange);
+        break;
     }
   }
 
   if (encoderPushPressed) {
-    if (currentScreen == UiScreen::kMain) {
-      currentScreen = UiScreen::kTransmitMenu;
-      transmitSelection = TransmitSelection::kOn;
-      setUiLastAction("MENU");
-      Serial.println("Button: PUSH -> IR transmit menu");
-    } else {
-      Serial.println("Button: PUSH (use CONFIRM to send)");
+    switch (currentScreen) {
+      case UiScreen::kMain:
+        currentScreen = UiScreen::kMainMenu;
+        mainMenuSelection = MainMenuSelection::kTransmit;
+        setUiLastAction("MENU");
+        break;
+      case UiScreen::kMainMenu:
+        if (mainMenuSelection == MainMenuSelection::kTransmit) {
+          currentScreen = UiScreen::kTransmitMenu;
+          transmitSelection = TransmitSelection::kOn;
+        } else {
+          currentScreen = UiScreen::kLearnCategory;
+        }
+        break;
+      case UiScreen::kLearnCategory:
+        currentScreen = UiScreen::kLearnTarget;
+        break;
+      case UiScreen::kLearnTarget:
+      case UiScreen::kTransmitMenu:
+        Serial.println("Button: PUSH (use CONFIRM for action)");
+        break;
     }
   }
+
   if (confirmPressed) {
-    if (currentScreen == UiScreen::kTransmitMenu) {
-      command = transmitSelection == TransmitSelection::kOn
-                    ? UiCommand::kSendOn
-                    : UiCommand::kSendOff;
-      Serial.printf("Button: CONFIRM -> send %s\n",
-                    command == UiCommand::kSendOn ? "ON" : "OFF");
-    } else {
-      setUiLastAction("AUTO OFF");
-      Serial.println("Button: CONFIRM -> automatic control is not enabled");
+    switch (currentScreen) {
+      case UiScreen::kMain:
+        setUiLastAction("AUTO OFF");
+        Serial.println("Button: CONFIRM -> automatic control is not enabled");
+        break;
+      case UiScreen::kMainMenu:
+        if (mainMenuSelection == MainMenuSelection::kTransmit) {
+          currentScreen = UiScreen::kTransmitMenu;
+          transmitSelection = TransmitSelection::kOn;
+        } else {
+          currentScreen = UiScreen::kLearnCategory;
+        }
+        break;
+      case UiScreen::kTransmitMenu:
+        command = transmitSelection == TransmitSelection::kOn
+                      ? UiCommand::kSendOn
+                      : UiCommand::kSendOff;
+        Serial.printf("Button: CONFIRM -> send %s\n",
+                      command == UiCommand::kSendOn ? "ON" : "OFF");
+        break;
+      case UiScreen::kLearnCategory:
+        currentScreen = UiScreen::kLearnTarget;
+        break;
+      case UiScreen::kLearnTarget:
+        buildLearningRequestLabel();
+        command = UiCommand::kStartLearning;
+        Serial.printf("Button: CONFIRM -> learn %s\n", learningRequestLabel);
+        break;
     }
   }
+
   if (backPressed) {
-    if (currentScreen == UiScreen::kTransmitMenu) {
-      currentScreen = UiScreen::kMain;
-      setUiLastAction("BACK");
-      Serial.println("Button: BACK -> main screen");
-    } else {
-      setUiLastAction("BACK");
-      Serial.println("Button: BACK");
+    switch (currentScreen) {
+      case UiScreen::kMain:
+        setUiLastAction("BACK");
+        break;
+      case UiScreen::kMainMenu:
+        currentScreen = UiScreen::kMain;
+        break;
+      case UiScreen::kTransmitMenu:
+      case UiScreen::kLearnCategory:
+        currentScreen = UiScreen::kMainMenu;
+        break;
+      case UiScreen::kLearnTarget:
+        currentScreen = UiScreen::kLearnCategory;
+        break;
     }
+    setUiLastAction("BACK");
   }
 
   readSensor(nowMs);
