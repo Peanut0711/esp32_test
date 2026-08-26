@@ -4,6 +4,8 @@
 #include <Adafruit_SHT4x.h>
 #include <Arduino.h>
 #include <Wire.h>
+#include <driver/gpio.h>
+#include <esp_attr.h>
 #include <string.h>
 
 namespace {
@@ -22,6 +24,9 @@ constexpr uint32_t kButtonDebounceMs = 25;
 constexpr uint32_t kSensorIntervalMs = 1000;
 constexpr uint32_t kSensorLogIntervalMs = 10000;
 constexpr uint32_t kDisplayIntervalMs = 100;
+constexpr uint8_t kEncoderDiagnosticQueueSize = 32;
+constexpr uint8_t kEncoderDetentState = 0b11;
+constexpr int8_t kEncoderMinimumDetentEdges = 2;
 
 enum class UiScreen : uint8_t {
   kMain,
@@ -83,6 +88,14 @@ struct DebouncedButton {
   uint32_t lastRawChangeMs;
 };
 
+struct EncoderDiagnosticEvent {
+  uint8_t priorState;
+  uint8_t currentState;
+  int8_t edge;
+  int8_t accumulatedSteps;
+  int8_t move;
+};
+
 Adafruit_SH1106G oled(128, 64, &Wire, -1);
 Adafruit_SHT4x sht40;
 
@@ -104,7 +117,7 @@ AutomaticControlSettings appliedAutomaticSettings = {
 AutomaticControlSettings draftAutomaticSettings = {
     true, 6, 0, 28.0F, AutomaticTriggerMode::kTimeAndTemperature, false, 3};
 bool uiInteractiveEnabled = true;
-bool encoderDiagnosticsEnabled = false;
+volatile bool encoderDiagnosticsEnabled = false;
 uint32_t lastUiInteractionMs = 0;
 UiScreen currentScreen = UiScreen::kMain;
 UiScreen automaticSettingsReturnScreen = UiScreen::kMain;
@@ -135,8 +148,18 @@ char learningLabel[32] = "";
 uint8_t learningCaptured = 0;
 uint8_t learningRequired = 0;
 
-uint8_t previousEncoderState = 0;
-int8_t encoderQuarterSteps = 0;
+portMUX_TYPE encoderMux = portMUX_INITIALIZER_UNLOCKED;
+DRAM_ATTR int8_t encoderTransitionTable[16] = {
+    0, -1, 1, 0, 1, 0, 0, -1, -1, 0, 0, 1, 0, 1, -1, 0};
+volatile uint8_t encoderPreviousState = 0;
+volatile int8_t encoderQuarterSteps = 0;
+volatile int16_t encoderPendingMoves = 0;
+volatile uint16_t encoderActivityCount = 0;
+volatile EncoderDiagnosticEvent
+    encoderDiagnosticQueue[kEncoderDiagnosticQueueSize];
+volatile uint8_t encoderDiagnosticHead = 0;
+volatile uint8_t encoderDiagnosticTail = 0;
+volatile uint16_t encoderDiagnosticDropped = 0;
 uint32_t lastSensorReadMs = 0;
 uint32_t lastSensorLogMs = 0;
 uint32_t lastDisplayDrawMs = 0;
@@ -169,42 +192,116 @@ bool updateButton(DebouncedButton &button, uint32_t nowMs) {
   return false;
 }
 
-int8_t readEncoderChange() {
-  static const int8_t transitionTable[16] = {
-      0, -1, 1, 0, 1, 0, 0, -1, -1, 0, 0, 1, 0, 1, -1, 0};
-
+void IRAM_ATTR handleEncoderEdge() {
   const uint8_t currentState =
-      (static_cast<uint8_t>(digitalRead(kEncoderAPin)) << 1) |
-      static_cast<uint8_t>(digitalRead(kEncoderBPin));
-  if (currentState == previousEncoderState) {
-    return 0;
+      (static_cast<uint8_t>(gpio_get_level(
+           static_cast<gpio_num_t>(kEncoderAPin)))
+       << 1) |
+      static_cast<uint8_t>(
+          gpio_get_level(static_cast<gpio_num_t>(kEncoderBPin)));
+
+  portENTER_CRITICAL_ISR(&encoderMux);
+  const uint8_t priorState = encoderPreviousState;
+  if (currentState == priorState) {
+    portEXIT_CRITICAL_ISR(&encoderMux);
+    return;
   }
 
-  const uint8_t priorState = previousEncoderState;
   const int8_t edge =
-      transitionTable[(priorState << 2) | currentState];
+      encoderTransitionTable[(priorState << 2) | currentState];
   encoderQuarterSteps += edge;
-  previousEncoderState = currentState;
-  lastUiInteractionMs = millis();
+  encoderPreviousState = currentState;
+  ++encoderActivityCount;
 
-  int8_t change = 0;
+  int8_t move = 0;
   const int8_t accumulatedSteps = encoderQuarterSteps;
-  if (encoderQuarterSteps >= 4) {
-    change = 1;
-    encoderQuarterSteps = 0;
-  } else if (encoderQuarterSteps <= -4) {
-    change = -1;
+  if (currentState == kEncoderDetentState) {
+    if (encoderQuarterSteps >= kEncoderMinimumDetentEdges) {
+      move = 1;
+      ++encoderPendingMoves;
+    } else if (encoderQuarterSteps <= -kEncoderMinimumDetentEdges) {
+      move = -1;
+      --encoderPendingMoves;
+    }
+    // Returning to the mechanical detent completes or cancels this click.
+    // Clearing here prevents an incomplete click from shifting every later one.
     encoderQuarterSteps = 0;
   }
 
   if (encoderDiagnosticsEnabled) {
-    Serial.printf(
-        "ENC prev=%u%u curr=%u%u edge=%+d sum=%+d move=%+d%s\n",
-        (priorState >> 1) & 1, priorState & 1,
-        (currentState >> 1) & 1, currentState & 1, edge,
-        accumulatedSteps, change,
-        edge == 0 ? " INVALID" : "");
+    const uint8_t nextHead = static_cast<uint8_t>(
+        (encoderDiagnosticHead + 1) % kEncoderDiagnosticQueueSize);
+    if (nextHead != encoderDiagnosticTail) {
+      volatile EncoderDiagnosticEvent &event =
+          encoderDiagnosticQueue[encoderDiagnosticHead];
+      event.priorState = priorState;
+      event.currentState = currentState;
+      event.edge = edge;
+      event.accumulatedSteps = accumulatedSteps;
+      event.move = move;
+      encoderDiagnosticHead = nextHead;
+    } else {
+      ++encoderDiagnosticDropped;
+    }
   }
+  portEXIT_CRITICAL_ISR(&encoderMux);
+}
+
+void printPendingEncoderDiagnostics() {
+  while (true) {
+    EncoderDiagnosticEvent event = {};
+    uint16_t dropped = 0;
+    bool available = false;
+    portENTER_CRITICAL(&encoderMux);
+    if (encoderDiagnosticTail != encoderDiagnosticHead) {
+      const volatile EncoderDiagnosticEvent &queued =
+          encoderDiagnosticQueue[encoderDiagnosticTail];
+      event = {queued.priorState, queued.currentState, queued.edge,
+               queued.accumulatedSteps, queued.move};
+      encoderDiagnosticTail = static_cast<uint8_t>(
+          (encoderDiagnosticTail + 1) % kEncoderDiagnosticQueueSize);
+      available = true;
+    } else if (encoderDiagnosticDropped != 0) {
+      dropped = encoderDiagnosticDropped;
+      encoderDiagnosticDropped = 0;
+    }
+    portEXIT_CRITICAL(&encoderMux);
+
+    if (available) {
+      Serial.printf(
+          "ENC prev=%u%u curr=%u%u edge=%+d sum=%+d move=%+d%s\n",
+          (event.priorState >> 1) & 1, event.priorState & 1,
+          (event.currentState >> 1) & 1, event.currentState & 1,
+          event.edge, event.accumulatedSteps, event.move,
+          event.edge == 0 ? " INVALID" : "");
+      continue;
+    }
+    if (dropped != 0) {
+      Serial.printf("ENC diagnostic queue dropped %u event(s).\n", dropped);
+    }
+    break;
+  }
+}
+
+int8_t readEncoderChange() {
+  int8_t change = 0;
+  bool encoderWasActive = false;
+  portENTER_CRITICAL(&encoderMux);
+  if (encoderPendingMoves > 0) {
+    change = 1;
+    --encoderPendingMoves;
+  } else if (encoderPendingMoves < 0) {
+    change = -1;
+    ++encoderPendingMoves;
+  }
+  encoderWasActive = encoderActivityCount != 0;
+  encoderActivityCount = 0;
+  portEXIT_CRITICAL(&encoderMux);
+
+  if (encoderWasActive) {
+    lastUiInteractionMs = millis();
+  }
+  printPendingEncoderDiagnostics();
 
   return change;
 }
@@ -1049,7 +1146,7 @@ void setupUiHardware(bool interactive) {
   uiInteractiveEnabled = interactive;
   lastUiInteractionMs = millis();
   Wire.begin(kSdaPin, kSclPin);
-  Wire.setClock(100000);
+  Wire.setClock(400000);
 
   oledReady = interactive && probeI2cAddress(kOledAddress);
   sht40Ready = probeI2cAddress(kSht40Address);
@@ -1081,9 +1178,13 @@ void setupUiHardware(bool interactive) {
   if (interactive) {
     pinMode(kEncoderAPin, INPUT_PULLUP);
     pinMode(kEncoderBPin, INPUT_PULLUP);
-    previousEncoderState =
+    encoderPreviousState =
         (static_cast<uint8_t>(digitalRead(kEncoderAPin)) << 1) |
         static_cast<uint8_t>(digitalRead(kEncoderBPin));
+    attachInterrupt(digitalPinToInterrupt(kEncoderAPin), handleEncoderEdge,
+                    CHANGE);
+    attachInterrupt(digitalPinToInterrupt(kEncoderBPin), handleEncoderEdge,
+                    CHANGE);
 
     initializeButton(encoderPush);
     initializeButton(confirmButton);
@@ -1094,16 +1195,27 @@ void setupUiHardware(bool interactive) {
 }
 
 void setUiEncoderDiagnostics(bool enabled) {
+  const uint8_t currentState =
+      uiInteractiveEnabled
+          ? (static_cast<uint8_t>(digitalRead(kEncoderAPin)) << 1) |
+                static_cast<uint8_t>(digitalRead(kEncoderBPin))
+          : 0;
+  portENTER_CRITICAL(&encoderMux);
   encoderDiagnosticsEnabled = enabled;
   encoderQuarterSteps = 0;
+  encoderPendingMoves = 0;
+  encoderActivityCount = 0;
+  encoderDiagnosticHead = 0;
+  encoderDiagnosticTail = 0;
+  encoderDiagnosticDropped = 0;
   if (uiInteractiveEnabled) {
-    previousEncoderState =
-        (static_cast<uint8_t>(digitalRead(kEncoderAPin)) << 1) |
-        static_cast<uint8_t>(digitalRead(kEncoderBPin));
+    encoderPreviousState = currentState;
   }
-  Serial.printf("Encoder diagnostics: %s, initial AB=%u%u, threshold=4\n",
+  portEXIT_CRITICAL(&encoderMux);
+  Serial.printf(
+      "Encoder diagnostics: %s, initial AB=%u%u, detent=11, min_edges=2\n",
                 enabled ? "ON" : "OFF",
-                (previousEncoderState >> 1) & 1, previousEncoderState & 1);
+                (currentState >> 1) & 1, currentState & 1);
 }
 
 bool getUiEncoderDiagnosticsEnabled() { return encoderDiagnosticsEnabled; }
