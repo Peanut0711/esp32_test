@@ -24,5 +24,6 @@ const char *getUiLearningRequestLabel();
 float getUiTemperatureC();
 void setUiAutomaticControlState(const char *status, bool clockValid,
                                 const AutomaticControlClock &clock,
-                                const AutomaticControlSettings &settings);
+                                const AutomaticControlSettings &settings,
+                                const AutomaticNetworkStatus &network);
 AutomaticControlSettings getUiAutomaticSettings();

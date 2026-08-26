@@ -23,6 +23,13 @@ struct AutomaticControlClock {
   uint8_t second;
 };
 
+struct AutomaticNetworkStatus {
+  bool configured;
+  bool connected;
+  int16_t rssiDbm;
+  char ipAddress[16];
+};
+
 void setupAutomaticControl();
 AutomaticControlCommand pollAutomaticControl(float temperatureC);
 void markAutomaticOnSent();
@@ -30,3 +37,4 @@ const char *getAutomaticControlStatus();
 AutomaticControlSettings getAutomaticControlSettings();
 bool saveAutomaticControlSettings(const AutomaticControlSettings &settings);
 bool getAutomaticControlClock(AutomaticControlClock *clock);
+AutomaticNetworkStatus getAutomaticNetworkStatus();

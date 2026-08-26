@@ -87,6 +87,7 @@ char lastAction[16] = "BOOT";
 char automaticControlStatus[16] = "NO WIFI CFG";
 bool automaticClockValid = false;
 AutomaticControlClock automaticClock = {};
+AutomaticNetworkStatus automaticNetwork = {};
 AutomaticControlSettings appliedAutomaticSettings = {true, 6, 0, 28.0F};
 AutomaticControlSettings draftAutomaticSettings = {true, 6, 0, 28.0F};
 UiScreen currentScreen = UiScreen::kMain;
@@ -497,24 +498,26 @@ void drawDisplay(uint32_t nowMs) {
 
   if (currentScreen == UiScreen::kClock) {
     oled.setCursor(0, 0);
-    oled.println("KOREA CLOCK");
+    oled.println("CLOCK & WIFI");
     if (automaticClockValid) {
-      oled.setCursor(0, 15);
+      oled.setCursor(0, 13);
       oled.printf("%04u-%02u-%02u", automaticClock.year,
                   automaticClock.month, automaticClock.day);
-      oled.setCursor(0, 29);
+      oled.setCursor(0, 26);
       oled.printf("%02u:%02u:%02u KST", automaticClock.hour,
                   automaticClock.minute, automaticClock.second);
-      oled.setCursor(0, 43);
-      oled.println("NTP: SYNCED");
     } else {
       oled.setCursor(0, 19);
       oled.println("TIME NOT SYNCED");
-      oled.setCursor(0, 36);
-      oled.printf("STATUS:%s", automaticControlStatus);
     }
-    oled.setCursor(0, 56);
-    oled.println("BACK: EXIT");
+    oled.setCursor(0, 39);
+    if (automaticNetwork.connected) {
+      oled.printf("WIFI:OK %ddBm", automaticNetwork.rssiDbm);
+    } else {
+      oled.printf("WIFI:%s", automaticNetwork.configured ? "WAIT" : "NO CONFIG");
+    }
+    oled.setCursor(0, 52);
+    oled.printf("IP:%s", automaticNetwork.ipAddress);
     oled.display();
     return;
   }
@@ -602,20 +605,27 @@ void drawDisplay(uint32_t nowMs) {
 
   char line[24];
 
+  if (automaticClockValid) {
+    if (automaticNetwork.connected) {
+      snprintf(line, sizeof(line), "%02u:%02u W:OK %ddBm",
+               automaticClock.hour, automaticClock.minute,
+               automaticNetwork.rssiDbm);
+    } else {
+      snprintf(line, sizeof(line), "%02u:%02u W:WAIT", automaticClock.hour,
+               automaticClock.minute);
+    }
+  } else {
+    snprintf(line, sizeof(line), "--:-- W:%s",
+             automaticNetwork.configured ? "WAIT" : "CFG?");
+  }
+  oled.setCursor(0, 0);
+  oled.println(line);
+
   if (isnan(temperatureC) || isnan(humidityPercent)) {
     snprintf(line, sizeof(line), "SHT40: --.-C --.-%%");
   } else {
     snprintf(line, sizeof(line), "T:%4.1fC  H:%4.1f%%", temperatureC,
              humidityPercent);
-  }
-  oled.setCursor(0, 0);
-  oled.println(line);
-
-  if (automaticClockValid) {
-    snprintf(line, sizeof(line), "TIME:%02u:%02u KST", automaticClock.hour,
-             automaticClock.minute);
-  } else {
-    snprintf(line, sizeof(line), "TIME:--:-- KST");
   }
   oled.setCursor(0, 13);
   oled.println(line);
@@ -674,7 +684,8 @@ float getUiTemperatureC() { return temperatureC; }
 
 void setUiAutomaticControlState(
     const char *status, bool clockValid, const AutomaticControlClock &clock,
-    const AutomaticControlSettings &settings) {
+    const AutomaticControlSettings &settings,
+    const AutomaticNetworkStatus &network) {
   const char *safeStatus = status ? status : "?";
   if (strcmp(automaticControlStatus, safeStatus) == 0 &&
       automaticClockValid == clockValid &&
@@ -686,7 +697,11 @@ void setUiAutomaticControlState(
       appliedAutomaticSettings.enabled == settings.enabled &&
       appliedAutomaticSettings.startHour == settings.startHour &&
       appliedAutomaticSettings.startMinute == settings.startMinute &&
-      appliedAutomaticSettings.onTemperatureC == settings.onTemperatureC) {
+      appliedAutomaticSettings.onTemperatureC == settings.onTemperatureC &&
+      automaticNetwork.configured == network.configured &&
+      automaticNetwork.connected == network.connected &&
+      automaticNetwork.rssiDbm == network.rssiDbm &&
+      strcmp(automaticNetwork.ipAddress, network.ipAddress) == 0) {
     return;
   }
 
@@ -695,6 +710,7 @@ void setUiAutomaticControlState(
   automaticClockValid = clockValid;
   automaticClock = clock;
   appliedAutomaticSettings = settings;
+  automaticNetwork = network;
   lastDisplayDrawMs = 0;
 }
 

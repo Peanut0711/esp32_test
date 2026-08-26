@@ -17,7 +17,9 @@ ON에는 LittleFS의 `cool_27_f1_swing_on_turbo_off`, 수동 OFF에는 `power_of
 
 ### 시계 조회
 
-`CLOCK`을 선택하면 한국 날짜와 초 단위 현재 시각, NTP 동기화 상태를 확인할 수 있다. BACK으로 메인 메뉴에 돌아간다. 시간이 아직 준비되지 않았으면 `TIME NOT SYNCED`와 연결 상태가 표시된다.
+기본 화면 상단에는 한국시간과 Wi-Fi 연결 상태가 항상 표시된다. 연결된 경우 `W:OK`와 RSSI 신호 세기가 나오고, 연결 중이면 `W:WAIT`, 접속 정보가 없으면 `W:CFG?`가 나온다.
+
+`CLOCK`을 선택하면 한국 날짜와 초 단위 현재 시각, Wi-Fi 연결 상태, RSSI와 IP 주소를 확인할 수 있다. BACK으로 메인 메뉴에 돌아간다. 시간이 아직 준비되지 않았으면 `TIME NOT SYNCED`와 연결 상태가 표시된다.
 
 ### 자동제어 설정
 

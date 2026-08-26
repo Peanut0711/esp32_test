@@ -223,3 +223,18 @@ bool getAutomaticControlClock(AutomaticControlClock *clock) {
   clock->second = static_cast<uint8_t>(localTime.tm_sec);
   return true;
 }
+
+AutomaticNetworkStatus getAutomaticNetworkStatus() {
+  AutomaticNetworkStatus network = {};
+  network.configured = wifiConfigured;
+  network.connected = WiFi.status() == WL_CONNECTED;
+  if (network.connected) {
+    network.rssiDbm = static_cast<int16_t>(WiFi.RSSI());
+    const String ipAddress = WiFi.localIP().toString();
+    snprintf(network.ipAddress, sizeof(network.ipAddress), "%s",
+             ipAddress.c_str());
+  } else {
+    snprintf(network.ipAddress, sizeof(network.ipAddress), "--");
+  }
+  return network;
+}

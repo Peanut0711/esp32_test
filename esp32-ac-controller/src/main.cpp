@@ -176,7 +176,8 @@ void setup() {
   setupUiHardware();
   const AutomaticControlClock initialClock = {};
   setUiAutomaticControlState(getAutomaticControlStatus(), false, initialClock,
-                             getAutomaticControlSettings());
+                             getAutomaticControlSettings(),
+                             getAutomaticNetworkStatus());
   Serial.println();
   Serial.println("ESP32-C3 IR receiver/transmitter ready.");
   Serial.println("Receiver: point the AC remote at GPIO3 receiver.");
@@ -221,7 +222,8 @@ void loop() {
   AutomaticControlClock localClock = {};
   const bool clockValid = getAutomaticControlClock(&localClock);
   setUiAutomaticControlState(getAutomaticControlStatus(), clockValid,
-                             localClock, getAutomaticControlSettings());
+                             localClock, getAutomaticControlSettings(),
+                             getAutomaticNetworkStatus());
 
   if (irrecv.decode(&results)) {
     Serial.println("\n========== IR received ==========");
