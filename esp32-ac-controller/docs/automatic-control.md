@@ -23,6 +23,8 @@ ON에는 LittleFS의 `cool_27_f1_swing_on_turbo_off`, 수동 OFF에는 `power_of
 
 ### 자동제어 설정
 
+기본 화면에서 CONFIRM을 누르면 `AUTO SETTINGS`가 바로 열린다. 노브를 눌러 `MAIN MENU`로 들어간 뒤 `AUTO SETTINGS`를 선택해도 같은 화면을 열 수 있다.
+
 `AUTO SETTINGS`에서 다음 값을 변경한다.
 
 | 항목 | 범위와 동작 |
@@ -32,7 +34,7 @@ ON에는 LittleFS의 `cool_27_f1_swing_on_turbo_off`, 수동 OFF에는 `power_of
 | `ON TEMP` | ON 기준 온도를 16.0~35.0°C 범위에서 0.5°C 단위로 설정한다. |
 | `SAVE & EXIT` | 설정을 비휘발성 저장소에 저장하고 메인 메뉴로 돌아간다. |
 
-노브 회전으로 항목을 이동하고 PUSH 또는 CONFIRM으로 선택한다. START는 시, 분 순서로 편집한다. 값을 저장하지 않고 나가려면 편집 중이 아닐 때 BACK을 누른다. 저장한 설정은 재부팅 후에도 유지된다.
+노브 회전으로 항목을 이동하고 PUSH 또는 CONFIRM으로 선택한다. START는 시, 분 순서로 편집한다. `*` 표시는 현재 값을 편집 중이라는 의미다. 편집 중 BACK을 누르면 해당 항목 편집을 끝내고, 다시 BACK을 누르면 이번 화면에서 바꾼 값을 모두 버리고 이전 화면으로 돌아간다. `SAVE & EXIT`를 선택한 경우에만 저장되며 저장한 설정은 재부팅 후에도 유지된다.
 
 ## Wi-Fi 설정
 

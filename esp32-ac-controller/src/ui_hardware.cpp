@@ -91,6 +91,7 @@ AutomaticNetworkStatus automaticNetwork = {};
 AutomaticControlSettings appliedAutomaticSettings = {true, 6, 0, 28.0F};
 AutomaticControlSettings draftAutomaticSettings = {true, 6, 0, 28.0F};
 UiScreen currentScreen = UiScreen::kMain;
+UiScreen automaticSettingsReturnScreen = UiScreen::kMain;
 MainMenuSelection mainMenuSelection = MainMenuSelection::kTransmit;
 AutomaticSettingSelection automaticSettingSelection =
     AutomaticSettingSelection::kEnabled;
@@ -217,6 +218,15 @@ const char *getMainMenuName(MainMenuSelection selection) {
   return "?";
 }
 
+void openAutomaticSettings(UiScreen returnScreen) {
+  automaticSettingsReturnScreen = returnScreen;
+  currentScreen = UiScreen::kAutomaticSettings;
+  automaticSettingSelection = AutomaticSettingSelection::kEnabled;
+  automaticSettingEditing = false;
+  automaticTimeEditField = 0;
+  draftAutomaticSettings = appliedAutomaticSettings;
+}
+
 void enterSelectedMainMenu() {
   switch (mainMenuSelection) {
     case MainMenuSelection::kTransmit:
@@ -230,10 +240,7 @@ void enterSelectedMainMenu() {
       currentScreen = UiScreen::kClock;
       break;
     case MainMenuSelection::kAutomaticSettings:
-      currentScreen = UiScreen::kAutomaticSettings;
-      automaticSettingSelection = AutomaticSettingSelection::kEnabled;
-      automaticSettingEditing = false;
-      draftAutomaticSettings = appliedAutomaticSettings;
+      openAutomaticSettings(UiScreen::kMainMenu);
       break;
     case MainMenuSelection::kCount:
       break;
@@ -286,7 +293,7 @@ UiCommand activateAutomaticSetting() {
       automaticSettingEditing = !automaticSettingEditing;
       break;
     case AutomaticSettingSelection::kSave:
-      currentScreen = UiScreen::kMainMenu;
+      currentScreen = automaticSettingsReturnScreen;
       automaticSettingEditing = false;
       return UiCommand::kSaveAutomaticSettings;
     case AutomaticSettingSelection::kCount:
@@ -640,7 +647,7 @@ void drawDisplay(uint32_t nowMs) {
   oled.setCursor(0, 39);
   oled.println(line);
 
-  snprintf(line, sizeof(line), "LAST:%s", lastAction);
+  snprintf(line, sizeof(line), "CONF:SET PUSH:MENU");
   oled.setCursor(0, 52);
   oled.println(line);
   oled.display();
@@ -879,8 +886,9 @@ UiCommand pollUiHardware() {
   if (confirmPressed) {
     switch (currentScreen) {
       case UiScreen::kMain:
-        setUiLastAction("AUTO STATUS");
-        Serial.println("Button: CONFIRM -> automatic control status");
+        openAutomaticSettings(UiScreen::kMain);
+        setUiLastAction("AUTO SET");
+        Serial.println("Button: CONFIRM -> automatic settings");
         break;
       case UiScreen::kMainMenu:
         enterSelectedMainMenu();
@@ -931,7 +939,7 @@ UiCommand pollUiHardware() {
           automaticSettingEditing = false;
         } else {
           draftAutomaticSettings = appliedAutomaticSettings;
-          currentScreen = UiScreen::kMainMenu;
+          currentScreen = automaticSettingsReturnScreen;
         }
         break;
     }
