@@ -104,6 +104,7 @@ AutomaticControlSettings appliedAutomaticSettings = {
 AutomaticControlSettings draftAutomaticSettings = {
     true, 6, 0, 28.0F, AutomaticTriggerMode::kTimeAndTemperature, false, 3};
 bool uiInteractiveEnabled = true;
+bool encoderDiagnosticsEnabled = false;
 uint32_t lastUiInteractionMs = 0;
 UiScreen currentScreen = UiScreen::kMain;
 UiScreen automaticSettingsReturnScreen = UiScreen::kMain;
@@ -179,17 +180,30 @@ int8_t readEncoderChange() {
     return 0;
   }
 
-  encoderQuarterSteps +=
-      transitionTable[(previousEncoderState << 2) | currentState];
+  const uint8_t priorState = previousEncoderState;
+  const int8_t edge =
+      transitionTable[(priorState << 2) | currentState];
+  encoderQuarterSteps += edge;
   previousEncoderState = currentState;
+  lastUiInteractionMs = millis();
 
   int8_t change = 0;
+  const int8_t accumulatedSteps = encoderQuarterSteps;
   if (encoderQuarterSteps >= 4) {
     change = 1;
     encoderQuarterSteps = 0;
   } else if (encoderQuarterSteps <= -4) {
     change = -1;
     encoderQuarterSteps = 0;
+  }
+
+  if (encoderDiagnosticsEnabled) {
+    Serial.printf(
+        "ENC prev=%u%u curr=%u%u edge=%+d sum=%+d move=%+d%s\n",
+        (priorState >> 1) & 1, priorState & 1,
+        (currentState >> 1) & 1, currentState & 1, edge,
+        accumulatedSteps, change,
+        edge == 0 ? " INVALID" : "");
   }
 
   return change;
@@ -1078,6 +1092,21 @@ void setupUiHardware(bool interactive) {
   lastSensorReadMs = millis() - kSensorIntervalMs;
   drawDisplay(millis());
 }
+
+void setUiEncoderDiagnostics(bool enabled) {
+  encoderDiagnosticsEnabled = enabled;
+  encoderQuarterSteps = 0;
+  if (uiInteractiveEnabled) {
+    previousEncoderState =
+        (static_cast<uint8_t>(digitalRead(kEncoderAPin)) << 1) |
+        static_cast<uint8_t>(digitalRead(kEncoderBPin));
+  }
+  Serial.printf("Encoder diagnostics: %s, initial AB=%u%u, threshold=4\n",
+                enabled ? "ON" : "OFF",
+                (previousEncoderState >> 1) & 1, previousEncoderState & 1);
+}
+
+bool getUiEncoderDiagnosticsEnabled() { return encoderDiagnosticsEnabled; }
 
 void prepareUiForSleep() {
   if (oledReady) {

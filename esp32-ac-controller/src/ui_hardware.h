@@ -42,6 +42,8 @@ struct UiTransmitSettings {
 
 void setupUiHardware(bool interactive = true);
 UiCommand pollUiHardware();
+void setUiEncoderDiagnostics(bool enabled);
+bool getUiEncoderDiagnosticsEnabled();
 void prepareUiForSleep();
 uint32_t getUiLastInteractionMs();
 void setUiLastAction(const char *action);

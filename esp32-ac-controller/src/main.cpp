@@ -49,6 +49,7 @@ void printCommandHelp() {
   Serial.println("Commands:");
   Serial.println("  on | off | help");
   Serial.println("  auto info");
+  Serial.println("  encoder debug on | encoder debug off | encoder debug status");
   Serial.println("  wifi info | wifi scan | wifi detail");
   Serial.println("  learn <label> | cancel");
   Serial.println("  list | show <label> | export | erase <label>");
@@ -184,6 +185,13 @@ bool sendCustomCommand(const UiTransmitSettings &settings,
 void handleCommand(const char *command) {
   if (strcmp(command, "auto info") == 0) {
     printAutomaticControlConfiguration();
+  } else if (strcmp(command, "encoder debug on") == 0) {
+    setUiEncoderDiagnostics(true);
+  } else if (strcmp(command, "encoder debug off") == 0) {
+    setUiEncoderDiagnostics(false);
+  } else if (strcmp(command, "encoder debug status") == 0) {
+    Serial.printf("Encoder diagnostics: %s\n",
+                  getUiEncoderDiagnosticsEnabled() ? "ON" : "OFF");
   } else if (strcmp(command, "wifi info") == 0) {
     printWifiCredentialDiagnostics();
   } else if (strcmp(command, "wifi scan") == 0) {
