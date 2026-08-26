@@ -38,4 +38,6 @@ AutomaticControlSettings getAutomaticControlSettings();
 bool saveAutomaticControlSettings(const AutomaticControlSettings &settings);
 bool getAutomaticControlClock(AutomaticControlClock *clock);
 AutomaticNetworkStatus getAutomaticNetworkStatus();
+void printWifiCredentialDiagnostics();
 void scanWifiNetworks();
+void runWifiDetailedDiagnostics();

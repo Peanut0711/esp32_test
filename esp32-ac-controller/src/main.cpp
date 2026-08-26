@@ -38,7 +38,7 @@ uint16_t learnedTimings[kLearnedTimingCapacity];
 void printCommandHelp() {
   Serial.println("Commands:");
   Serial.println("  on | off | help");
-  Serial.println("  wifi scan");
+  Serial.println("  wifi info | wifi scan | wifi detail");
   Serial.println("  learn <label> | cancel");
   Serial.println("  list | show <label> | export | erase <label>");
 }
@@ -72,8 +72,12 @@ bool sendConfiguredOff(const char *displayName) {
 }
 
 void handleCommand(const char *command) {
-  if (strcmp(command, "wifi scan") == 0) {
+  if (strcmp(command, "wifi info") == 0) {
+    printWifiCredentialDiagnostics();
+  } else if (strcmp(command, "wifi scan") == 0) {
     scanWifiNetworks();
+  } else if (strcmp(command, "wifi detail") == 0) {
+    runWifiDetailedDiagnostics();
   } else if (strncmp(command, "learn ", 6) == 0) {
     const char *label = command + 6;
     if (startIrLearning(label)) {
@@ -175,6 +179,7 @@ void setup() {
   irrecv.enableIRIn();
   irsend.begin();
   setupIrLearning();
+  printWifiCredentialDiagnostics();
   setupAutomaticControl();
   setupUiHardware();
   const AutomaticControlClock initialClock = {};

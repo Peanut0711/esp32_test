@@ -51,6 +51,24 @@ constexpr char kWifiPassword[] = "PASSWORD";
 
 `wifi_secrets.h`는 `.gitignore`에 등록되어 커밋되지 않는다. 설정 파일이 없거나 SSID가 비어 있으면 자동제어는 비활성화되고 OLED에 `NO WIFI CFG`가 표시된다.
 
+### 펌웨어 자격 증명 확인
+
+`wifi_secrets.h`를 수정한 뒤에는 PlatformIO가 이전 오브젝트 파일을 재사용하지 않도록 클린 빌드한다.
+
+```powershell
+pio run -t clean
+pio run -t upload
+pio device monitor -b 115200
+```
+
+부팅 로그 또는 시리얼 명령 `wifi info`에서 펌웨어 빌드 시각, SSID, 비밀번호 바이트 수와 8자리 진단 지문을 확인할 수 있다. 비밀번호 원문은 출력하지 않는다. PC에서 다음 스크립트를 실행하면 현재 `wifi_secrets.h`로 동일한 지문을 계산한다.
+
+```powershell
+.\scripts\wifi-credential-diagnostic.ps1
+```
+
+PC와 ESP32의 `password bytes`와 `fingerprint`가 모두 같으면 현재 펌웨어에 동일한 접속 정보가 포함된 것이다. 지문은 설정 불일치 확인용이며 비밀번호를 대신하는 인증 정보로 사용하지 않는다.
+
 ## OLED 상태
 
 | 표시 | 의미 |
@@ -66,4 +84,6 @@ constexpr char kWifiPassword[] = "PASSWORD";
 
 업로드 후 시리얼 로그에서 Wi-Fi IP와 `NTP synchronization requested`를 확인하고, OLED의 시간이 한국시간과 일치하는지 확인한다.
 
-연결 문제를 확인할 때 시리얼 모니터에서 `wifi scan`을 실행하면 ESP32-C3가 감지한 주변 SSID, 채널, RSSI와 보안 방식 번호를 출력한다. 스캔이 끝난 뒤 연결되지 않은 상태라면 기존 30초 재시도 흐름으로 돌아간다. 연결이 끊기거나 인증에 실패하면 `Wi-Fi disconnected: reason=<번호>` 로그도 출력한다.
+연결 문제를 확인할 때 시리얼 모니터에서 `wifi info`를 실행하면 펌웨어에 포함된 자격 증명의 진단 정보를 출력하고, `wifi scan`을 실행하면 ESP32-C3가 감지한 주변 SSID, 채널, RSSI와 보안 방식 번호를 출력한다. `wifi detail`은 자동 재연결을 잠시 중단한 뒤 설정 SSID만 스캔하고, AP의 BSSID·암호화 방식·PHY·채널 폭을 출력한 다음 가장 강한 BSSID에 고정한 단일 연결 시험을 수행한다. 비밀번호 원문은 어떤 진단에서도 출력하지 않는다. 스캔이나 상세 시험이 끝난 뒤 연결되지 않은 상태라면 기존 30초 재시도 흐름으로 돌아간다. 연결이 끊기거나 인증에 실패하면 사유 이름, BSSID와 RSSI도 로그에 출력한다.
+
+일부 ESP32-C3 SuperMini 생산분은 RF 레이아웃 문제로 기본 송신 출력에서 인증 응답을 받지 못할 수 있다. 이 프로젝트는 Wi-Fi 초기화 직후 송신 출력을 `WIFI_POWER_8_5dBm`으로 제한한다. 실제 대상 보드에서는 제한 전 `AUTH_EXPIRE`가 반복됐지만, 제한 후 WPA2 연결과 DHCP 주소 할당까지 약 1.4초 안에 완료됐다. 외장 안테나 보드나 RF 문제가 없는 보드에서 출력 범위를 늘리려면 먼저 동일 장소에서 장시간 연결 안정성을 확인한다.
