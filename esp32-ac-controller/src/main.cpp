@@ -38,6 +38,7 @@ uint16_t learnedTimings[kLearnedTimingCapacity];
 void printCommandHelp() {
   Serial.println("Commands:");
   Serial.println("  on | off | help");
+  Serial.println("  wifi scan");
   Serial.println("  learn <label> | cancel");
   Serial.println("  list | show <label> | export | erase <label>");
 }
@@ -71,7 +72,9 @@ bool sendConfiguredOff(const char *displayName) {
 }
 
 void handleCommand(const char *command) {
-  if (strncmp(command, "learn ", 6) == 0) {
+  if (strcmp(command, "wifi scan") == 0) {
+    scanWifiNetworks();
+  } else if (strncmp(command, "learn ", 6) == 0) {
     const char *label = command + 6;
     if (startIrLearning(label)) {
       setUiLearningProgress(getIrLearningLabel(), 0,

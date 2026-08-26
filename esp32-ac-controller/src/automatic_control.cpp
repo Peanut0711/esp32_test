@@ -96,6 +96,12 @@ void setupAutomaticControl() {
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
   WiFi.persistent(false);
+  WiFi.onEvent(
+      [](arduino_event_id_t, arduino_event_info_t info) {
+        Serial.printf("Wi-Fi disconnected: reason=%u\n",
+                      info.wifi_sta_disconnected.reason);
+      },
+      ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
   startWifi(millis());
 }
 
@@ -237,4 +243,32 @@ AutomaticNetworkStatus getAutomaticNetworkStatus() {
     snprintf(network.ipAddress, sizeof(network.ipAddress), "--");
   }
   return network;
+}
+
+void scanWifiNetworks() {
+  Serial.println("Wi-Fi scan started...");
+  WiFi.scanDelete();
+  WiFi.disconnect(false, false);
+  delay(100);
+  const int16_t networkCount = WiFi.scanNetworks(false, true);
+  if (networkCount < 0) {
+    Serial.printf("Wi-Fi scan failed: %d\n", networkCount);
+    startWifi(millis());
+    return;
+  }
+  if (networkCount == 0) {
+    Serial.println("Wi-Fi scan complete: no networks found.");
+    WiFi.scanDelete();
+    startWifi(millis());
+    return;
+  }
+
+  Serial.printf("Wi-Fi scan complete: %d network(s)\n", networkCount);
+  for (int16_t index = 0; index < networkCount; ++index) {
+    Serial.printf("  %2d. %-32s channel=%2d RSSI=%4d dBm auth=%d\n",
+                  index + 1, WiFi.SSID(index).c_str(), WiFi.channel(index),
+                  WiFi.RSSI(index), static_cast<int>(WiFi.encryptionType(index)));
+  }
+  WiFi.scanDelete();
+  startWifi(millis());
 }

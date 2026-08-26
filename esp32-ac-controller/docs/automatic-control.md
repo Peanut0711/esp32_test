@@ -65,3 +65,5 @@ constexpr char kWifiPassword[] = "PASSWORD";
 | `SENSOR ERR` | 온도 측정값이 유효하지 않음 |
 
 업로드 후 시리얼 로그에서 Wi-Fi IP와 `NTP synchronization requested`를 확인하고, OLED의 시간이 한국시간과 일치하는지 확인한다.
+
+연결 문제를 확인할 때 시리얼 모니터에서 `wifi scan`을 실행하면 ESP32-C3가 감지한 주변 SSID, 채널, RSSI와 보안 방식 번호를 출력한다. 스캔이 끝난 뒤 연결되지 않은 상태라면 기존 30초 재시도 흐름으로 돌아간다. 연결이 끊기거나 인증에 실패하면 `Wi-Fi disconnected: reason=<번호>` 로그도 출력한다.
