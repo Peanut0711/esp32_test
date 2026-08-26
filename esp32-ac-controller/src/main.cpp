@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "ir_packets.h"
+#include "ui_hardware.h"
 
 // HX-M121 OUT -> GPIO3. Power the receiver from 3.3 V so its OUT level is safe
 // for the ESP32-C3 input.
@@ -37,6 +38,7 @@ void sendRawCommand(const char *name, uint16_t timings[], size_t timingCount) {
                 static_cast<unsigned int>(timingCount));
   irsend.sendRaw(timings, timingCount, kIrCarrierKhz);
   Serial.printf("IR TX %s complete\n", name);
+  setUiLastAction(strcmp(name, "on") == 0 ? "TX ON" : "TX OFF");
 }
 
 void handleCommand(const char *command) {
@@ -111,6 +113,7 @@ void setup() {
 
   irrecv.enableIRIn();
   irsend.begin();
+  setupUiHardware();
   Serial.println();
   Serial.println("ESP32-C3 IR receiver/transmitter ready.");
   Serial.println("Receiver: point the AC remote at GPIO3 receiver.");
@@ -119,10 +122,12 @@ void setup() {
 
 void loop() {
   pollSerialCommands();
+  pollUiHardware();
 
   if (irrecv.decode(&results)) {
     Serial.println("\n========== IR received ==========");
     printDecodedResult(&results);
+    setUiLastAction("IR RX");
     irrecv.resume();  // Re-arm receiver for the next packet.
   }
 }
