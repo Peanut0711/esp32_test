@@ -8,9 +8,8 @@
 | --- | --- | --- |
 | VCC | 3.3V | 모듈 전원 |
 | GND | GND | 공통 접지 |
-| SDA | GPIO20 | OLED·SHT40 I2C 데이터 |
+| SDA | GPIO8 | OLED·SHT40 I2C 데이터 |
 | SCL | GPIO9 | OLED I2C 클록 |
-| 내장 파란 LED | GPIO8 | 일반 UI 동작 중 500ms 주기 하트비트 |
 | TRA | GPIO5 | 엔코더 A상 |
 | TRB | GPIO6 | 엔코더 B상 |
 | PSH | GPIO7 | 엔코더 누름 |
@@ -18,8 +17,6 @@
 | BAK | GPIO1 (선택) | 이전 메뉴 |
 
 모듈은 3.3V로 구동한다. 5V 구동 시 I2C 풀업과 입력 신호가 ESP32-C3 허용 전압을 넘을 수 있다.
-
-ESP32-C3 SuperMini 내장 파란 LED와 I2C SDA가 충돌하지 않도록 OLED와 SHT40의 공통 SDA 배선을 GPIO20에 연결한다. GPIO8 LED는 LOW에서 켜지는 active-low 방식으로 제어하며, 일반 UI가 동작하는 동안 500ms마다 상태를 바꾼다. RTC 타이머 전용 기상과 Deep Sleep에서는 LED를 끈다.
 
 ## 메인 화면
 
