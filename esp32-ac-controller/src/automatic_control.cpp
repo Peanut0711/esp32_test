@@ -1,6 +1,7 @@
 #include "automatic_control.h"
 
 #include <Arduino.h>
+#include <Preferences.h>
 #include <WiFi.h>
 #include <math.h>
 #include <time.h>
@@ -14,12 +15,12 @@ constexpr char kWifiPassword[] = "";
 
 namespace {
 
-constexpr float kAutomaticOnTemperatureC = 28.0F;
-constexpr uint8_t kAutomaticStartHour = 6;
 constexpr uint32_t kWifiRetryIntervalMs = 30000;
 constexpr char kKoreanTimezone[] = "KST-9";
+constexpr char kPreferencesNamespace[] = "ac-auto";
 
-bool automaticControlEnabled = false;
+AutomaticControlSettings automaticSettings = {true, 6, 0, 28.0F};
+bool wifiConfigured = false;
 bool ntpConfigured = false;
 int32_t lastSentDayKey = -1;
 uint32_t lastWifiAttemptMs = 0;
@@ -49,11 +50,43 @@ int32_t makeDayKey(const tm &localTime) {
   return (localTime.tm_year + 1900) * 1000 + localTime.tm_yday;
 }
 
+bool settingsAreValid(const AutomaticControlSettings &settings) {
+  return settings.startHour <= 23 && settings.startMinute <= 59 &&
+         settings.onTemperatureC >= 16.0F &&
+         settings.onTemperatureC <= 35.0F;
+}
+
+void loadSettings() {
+  Preferences preferences;
+  if (!preferences.begin(kPreferencesNamespace, true)) {
+    Serial.println("No saved automatic settings; using defaults.");
+    return;
+  }
+
+  AutomaticControlSettings loaded = {
+      preferences.getBool("enabled", automaticSettings.enabled),
+      preferences.getUChar("hour", automaticSettings.startHour),
+      preferences.getUChar("minute", automaticSettings.startMinute),
+      preferences.getFloat("temp", automaticSettings.onTemperatureC)};
+  preferences.end();
+  if (settingsAreValid(loaded)) {
+    automaticSettings = loaded;
+  } else {
+    Serial.println("Invalid automatic settings found; using defaults.");
+  }
+}
+
 }  // namespace
 
 void setupAutomaticControl() {
-  automaticControlEnabled = kWifiSsid[0] != '\0';
-  if (!automaticControlEnabled) {
+  loadSettings();
+  Serial.printf("Automatic settings: %s, start %02u:%02u, ON > %.1f C\n",
+                automaticSettings.enabled ? "ON" : "OFF",
+                automaticSettings.startHour, automaticSettings.startMinute,
+                automaticSettings.onTemperatureC);
+
+  wifiConfigured = kWifiSsid[0] != '\0';
+  if (!wifiConfigured) {
     Serial.println(
         "Automatic control disabled: create include/wifi_secrets.h first.");
     setStatus("NO WIFI CFG");
@@ -67,7 +100,7 @@ void setupAutomaticControl() {
 }
 
 AutomaticControlCommand pollAutomaticControl(float temperatureC) {
-  if (!automaticControlEnabled) {
+  if (!wifiConfigured) {
     return AutomaticControlCommand::kNone;
   }
 
@@ -96,14 +129,24 @@ AutomaticControlCommand pollAutomaticControl(float temperatureC) {
     return AutomaticControlCommand::kNone;
   }
 
+  if (!automaticSettings.enabled) {
+    setStatus("AUTO OFF");
+    return AutomaticControlCommand::kNone;
+  }
+
   const int32_t todayKey = makeDayKey(localTime);
   if (lastSentDayKey == todayKey) {
     setStatus("ON SENT");
     return AutomaticControlCommand::kNone;
   }
 
-  if (localTime.tm_hour < kAutomaticStartHour) {
-    setStatus("WAIT 06:00");
+  const uint16_t currentMinutes =
+      static_cast<uint16_t>(localTime.tm_hour) * 60 + localTime.tm_min;
+  const uint16_t startMinutes =
+      static_cast<uint16_t>(automaticSettings.startHour) * 60 +
+      automaticSettings.startMinute;
+  if (currentMinutes < startMinutes) {
+    setStatus("TIME WAIT");
     return AutomaticControlCommand::kNone;
   }
 
@@ -112,7 +155,7 @@ AutomaticControlCommand pollAutomaticControl(float temperatureC) {
     return AutomaticControlCommand::kNone;
   }
 
-  if (temperatureC > kAutomaticOnTemperatureC) {
+  if (temperatureC > automaticSettings.onTemperatureC) {
     setStatus("ON READY");
     return AutomaticControlCommand::kSendOn;
   }
@@ -131,12 +174,52 @@ void markAutomaticOnSent() {
 
 const char *getAutomaticControlStatus() { return statusText; }
 
-bool getAutomaticControlClock(uint8_t *hour, uint8_t *minute) {
-  tm localTime = {};
-  if (!hour || !minute || !readKoreanTime(&localTime)) {
+AutomaticControlSettings getAutomaticControlSettings() {
+  return automaticSettings;
+}
+
+bool saveAutomaticControlSettings(
+    const AutomaticControlSettings &settings) {
+  if (!settingsAreValid(settings)) {
+    Serial.println("Automatic settings rejected: invalid value.");
     return false;
   }
-  *hour = static_cast<uint8_t>(localTime.tm_hour);
-  *minute = static_cast<uint8_t>(localTime.tm_min);
+
+  Preferences preferences;
+  if (!preferences.begin(kPreferencesNamespace, false)) {
+    Serial.println("Automatic settings storage unavailable.");
+    return false;
+  }
+
+  const bool saved = preferences.putBool("enabled", settings.enabled) == 1 &&
+                     preferences.putUChar("hour", settings.startHour) == 1 &&
+                     preferences.putUChar("minute", settings.startMinute) == 1 &&
+                     preferences.putFloat("temp", settings.onTemperatureC) ==
+                         sizeof(float);
+  preferences.end();
+  if (!saved) {
+    Serial.println("Automatic settings save failed.");
+    return false;
+  }
+
+  automaticSettings = settings;
+  Serial.printf("Automatic settings saved: %s, start %02u:%02u, ON > %.1f C\n",
+                automaticSettings.enabled ? "ON" : "OFF",
+                automaticSettings.startHour, automaticSettings.startMinute,
+                automaticSettings.onTemperatureC);
+  return true;
+}
+
+bool getAutomaticControlClock(AutomaticControlClock *clock) {
+  tm localTime = {};
+  if (!clock || !readKoreanTime(&localTime)) {
+    return false;
+  }
+  clock->year = static_cast<uint16_t>(localTime.tm_year + 1900);
+  clock->month = static_cast<uint8_t>(localTime.tm_mon + 1);
+  clock->day = static_cast<uint8_t>(localTime.tm_mday);
+  clock->hour = static_cast<uint8_t>(localTime.tm_hour);
+  clock->minute = static_cast<uint8_t>(localTime.tm_min);
+  clock->second = static_cast<uint8_t>(localTime.tm_sec);
   return true;
 }

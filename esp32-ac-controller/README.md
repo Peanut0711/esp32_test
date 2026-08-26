@@ -23,7 +23,7 @@ pio device monitor -b 115200
 
 상태별 신호를 세 번씩 LittleFS에 저장할 수 있다. OLED에서 전원, 모드, 온도, 풍량, 스윙, 터보, 예약 종료 목표를 선택하는 방법과 터미널 명령은 [docs/ir-learning.md](docs/ir-learning.md)를 참고합니다.
 
-한국시간 오전 6시 이후 SHT40 온도가 28°C를 초과하면 학습된 냉방 27°C·풍량 1단·스윙 ON·터보 OFF 신호를 하루 한 번 보내는 방법은 [docs/automatic-control.md](docs/automatic-control.md)를 참고합니다.
+OLED에서 한국시간을 조회하고 모니터링 시작 시각과 ON 기준 온도를 설정해 학습된 냉방 27°C·풍량 1단·스윙 ON·터보 OFF 신호를 하루 한 번 보내는 방법은 [docs/automatic-control.md](docs/automatic-control.md)를 참고합니다.
 
 Arduino IDE를 사용할 경우 보드로 ESP32-C3 Dev Module을 선택하고 Library Manager에서 **IRremoteESP8266**를 설치한 뒤, `src/main.cpp` 내용을 `.ino` 스케치에 복사하면 됩니다.
 

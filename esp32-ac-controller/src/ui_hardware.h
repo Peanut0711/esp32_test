@@ -1,5 +1,7 @@
 #pragma once
 
+#include "automatic_control.h"
+
 #include <stdint.h>
 
 enum class UiCommand : uint8_t {
@@ -8,6 +10,7 @@ enum class UiCommand : uint8_t {
   kSendOff,
   kStartLearning,
   kCancelLearning,
+  kSaveAutomaticSettings,
 };
 
 void setupUiHardware();
@@ -19,5 +22,7 @@ void showUiLearningStartError(const char *label);
 void clearUiLearningStatus();
 const char *getUiLearningRequestLabel();
 float getUiTemperatureC();
-void setUiAutomaticControlStatus(const char *status, bool clockValid,
-                                 uint8_t hour, uint8_t minute);
+void setUiAutomaticControlState(const char *status, bool clockValid,
+                                const AutomaticControlClock &clock,
+                                const AutomaticControlSettings &settings);
+AutomaticControlSettings getUiAutomaticSettings();

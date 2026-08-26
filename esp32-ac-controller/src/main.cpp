@@ -172,8 +172,11 @@ void setup() {
   irrecv.enableIRIn();
   irsend.begin();
   setupIrLearning();
-  setupUiHardware();
   setupAutomaticControl();
+  setupUiHardware();
+  const AutomaticControlClock initialClock = {};
+  setUiAutomaticControlState(getAutomaticControlStatus(), false, initialClock,
+                             getAutomaticControlSettings());
   Serial.println();
   Serial.println("ESP32-C3 IR receiver/transmitter ready.");
   Serial.println("Receiver: point the AC remote at GPIO3 receiver.");
@@ -200,6 +203,12 @@ void loop() {
     cancelIrLearning();
     clearUiLearningStatus();
     setUiLastAction("CANCEL");
+  } else if (uiCommand == UiCommand::kSaveAutomaticSettings) {
+    if (saveAutomaticControlSettings(getUiAutomaticSettings())) {
+      setUiLastAction("AUTO SAVED");
+    } else {
+      setUiLastAction("SAVE ERROR");
+    }
   }
 
   const AutomaticControlCommand automaticCommand =
@@ -209,12 +218,10 @@ void loop() {
     markAutomaticOnSent();
   }
 
-  uint8_t localHour = 0;
-  uint8_t localMinute = 0;
-  const bool clockValid =
-      getAutomaticControlClock(&localHour, &localMinute);
-  setUiAutomaticControlStatus(getAutomaticControlStatus(), clockValid,
-                              localHour, localMinute);
+  AutomaticControlClock localClock = {};
+  const bool clockValid = getAutomaticControlClock(&localClock);
+  setUiAutomaticControlState(getAutomaticControlStatus(), clockValid,
+                             localClock, getAutomaticControlSettings());
 
   if (irrecv.decode(&results)) {
     Serial.println("\n========== IR received ==========");
