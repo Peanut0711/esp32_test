@@ -49,9 +49,16 @@ enum class AutomaticSettingSelection : uint8_t {
   kCount,
 };
 
-enum class TransmitSelection : uint8_t {
-  kOn,
-  kOff,
+enum class TransmitSettingSelection : uint8_t {
+  kPower,
+  kMode,
+  kTemperature,
+  kFan,
+  kSwing,
+  kTurbo,
+  kSend,
+  kLearn,
+  kCount,
 };
 
 enum class LearnCategory : uint8_t {
@@ -97,7 +104,17 @@ AutomaticSettingSelection automaticSettingSelection =
     AutomaticSettingSelection::kEnabled;
 bool automaticSettingEditing = false;
 uint8_t automaticTimeEditField = 0;
-TransmitSelection transmitSelection = TransmitSelection::kOn;
+TransmitSettingSelection transmitSettingSelection =
+    TransmitSettingSelection::kPower;
+bool transmitSettingEditing = false;
+UiTransmitSettings transmitSettings = {
+    true, UiTransmitMode::kCool, 27, UiTransmitFan::k1, true, false};
+char transmitRequestLabel[32] = "";
+char transmitFeedback[24] = "";
+bool customRecordActionVisible = false;
+bool customRecordResultVisible = false;
+bool customRecordEraseSucceeded = false;
+char customRecordLabel[32] = "";
 LearnCategory learnCategory = LearnCategory::kPower;
 int8_t learnTargetValues[static_cast<uint8_t>(LearnCategory::kCount)] = {
     1, 0, 26, 0, 1, 0, 0};
@@ -227,11 +244,94 @@ void openAutomaticSettings(UiScreen returnScreen) {
   draftAutomaticSettings = appliedAutomaticSettings;
 }
 
+const char *getTransmitModeName(UiTransmitMode mode) {
+  static const char *const kNames[] = {"COOL", "FAN", "HEAT"};
+  return kNames[static_cast<uint8_t>(mode)];
+}
+
+const char *getTransmitFanName(UiTransmitFan fan) {
+  static const char *const kNames[] = {"F1", "F2", "F3", "AUTO"};
+  return kNames[static_cast<uint8_t>(fan)];
+}
+
+void buildTransmitRequestLabel() {
+  if (!transmitSettings.power) {
+    snprintf(transmitRequestLabel, sizeof(transmitRequestLabel), "power_off");
+    return;
+  }
+
+  static const char *const kModeLabels[] = {"c", "f", "h"};
+  static const char *const kFanLabels[] = {"1", "2", "3", "a"};
+  snprintf(transmitRequestLabel, sizeof(transmitRequestLabel),
+           "ac_%s_%02u_%s_s%u_t%u",
+           kModeLabels[static_cast<uint8_t>(transmitSettings.mode)],
+           transmitSettings.temperatureC,
+           kFanLabels[static_cast<uint8_t>(transmitSettings.fan)],
+           transmitSettings.swing, transmitSettings.turbo);
+}
+
+void adjustTransmitSetting(int8_t change) {
+  transmitFeedback[0] = '\0';
+  switch (transmitSettingSelection) {
+    case TransmitSettingSelection::kPower:
+      transmitSettings.power = !transmitSettings.power;
+      break;
+    case TransmitSettingSelection::kMode:
+      transmitSettings.mode = static_cast<UiTransmitMode>(wrapValue(
+          static_cast<int8_t>(transmitSettings.mode) + change, 0, 2));
+      break;
+    case TransmitSettingSelection::kTemperature:
+      transmitSettings.temperatureC = static_cast<uint8_t>(wrapValue(
+          static_cast<int8_t>(transmitSettings.temperatureC) + change, 16,
+          30));
+      break;
+    case TransmitSettingSelection::kFan:
+      transmitSettings.fan = static_cast<UiTransmitFan>(wrapValue(
+          static_cast<int8_t>(transmitSettings.fan) + change, 0, 3));
+      break;
+    case TransmitSettingSelection::kSwing:
+      transmitSettings.swing = !transmitSettings.swing;
+      break;
+    case TransmitSettingSelection::kTurbo:
+      transmitSettings.turbo = !transmitSettings.turbo;
+      break;
+    case TransmitSettingSelection::kSend:
+    case TransmitSettingSelection::kLearn:
+    case TransmitSettingSelection::kCount:
+      break;
+  }
+}
+
+UiCommand activateTransmitSetting() {
+  transmitFeedback[0] = '\0';
+  switch (transmitSettingSelection) {
+    case TransmitSettingSelection::kPower:
+    case TransmitSettingSelection::kMode:
+    case TransmitSettingSelection::kTemperature:
+    case TransmitSettingSelection::kFan:
+    case TransmitSettingSelection::kSwing:
+    case TransmitSettingSelection::kTurbo:
+      transmitSettingEditing = !transmitSettingEditing;
+      return UiCommand::kNone;
+    case TransmitSettingSelection::kSend:
+      buildTransmitRequestLabel();
+      return UiCommand::kSendCustom;
+    case TransmitSettingSelection::kLearn:
+      buildTransmitRequestLabel();
+      return UiCommand::kStartCustomLearning;
+    case TransmitSettingSelection::kCount:
+      break;
+  }
+  return UiCommand::kNone;
+}
+
 void enterSelectedMainMenu() {
   switch (mainMenuSelection) {
     case MainMenuSelection::kTransmit:
       currentScreen = UiScreen::kTransmitMenu;
-      transmitSelection = TransmitSelection::kOn;
+      transmitSettingSelection = TransmitSettingSelection::kPower;
+      transmitSettingEditing = false;
+      transmitFeedback[0] = '\0';
       break;
     case MainMenuSelection::kLearn:
       currentScreen = UiScreen::kLearnCategory;
@@ -463,6 +563,34 @@ void drawDisplay(uint32_t nowMs) {
   oled.setTextColor(SH110X_WHITE);
   oled.setTextWrap(false);
 
+  if (customRecordActionVisible) {
+    oled.setCursor(0, 0);
+    oled.println("SAVED IR EXISTS");
+    oled.setCursor(0, 13);
+    oled.printf("%.21s", customRecordLabel);
+    oled.setCursor(0, 26);
+    oled.println("PUSH: ERASE");
+    oled.setCursor(0, 39);
+    oled.println("CONFIRM: RELEARN");
+    oled.setCursor(0, 52);
+    oled.println("BACK: CANCEL");
+    oled.display();
+    return;
+  }
+
+  if (customRecordResultVisible) {
+    oled.setCursor(0, 0);
+    oled.println("IR RECORD");
+    oled.setCursor(0, 13);
+    oled.printf("%.21s", customRecordLabel);
+    oled.setCursor(0, 30);
+    oled.println(customRecordEraseSucceeded ? "ERASED" : "ERASE FAILED");
+    oled.setCursor(0, 52);
+    oled.println("ANY BUTTON: BACK");
+    oled.display();
+    return;
+  }
+
   if (learningStatusVisible) {
     oled.setCursor(0, 0);
     oled.println(learningStartError ? "IR LEARN FAILED" : "IR LEARN");
@@ -558,18 +686,57 @@ void drawDisplay(uint32_t nowMs) {
   }
 
   if (currentScreen == UiScreen::kTransmitMenu) {
+    const uint8_t selected = static_cast<uint8_t>(transmitSettingSelection);
+    const uint8_t itemCount =
+        static_cast<uint8_t>(TransmitSettingSelection::kCount);
+    uint8_t first = selected > 1 ? selected - 1 : 0;
+    if (first + 4 > itemCount) {
+      first = itemCount - 4;
+    }
+
     oled.setCursor(0, 0);
-    oled.println("IR TRANSMIT TEST");
-    oled.setCursor(0, 16);
-    oled.println(transmitSelection == TransmitSelection::kOn ? "> AC ON" :
-                                                               "  AC ON");
-    oled.setCursor(0, 29);
-    oled.println(transmitSelection == TransmitSelection::kOff ? "> AC OFF" :
-                                                                "  AC OFF");
-    oled.setCursor(0, 45);
-    oled.println("CONFIRM: SEND");
-    oled.setCursor(0, 56);
-    oled.println("BACK: EXIT");
+    oled.println(transmitFeedback[0] ? transmitFeedback : "CUSTOM IR TX");
+    for (uint8_t row = 0; row < 4; ++row) {
+      const uint8_t index = first + row;
+      const char marker = index == selected
+                              ? (transmitSettingEditing ? '*' : '>')
+                              : ' ';
+      oled.setCursor(0, 14 + row * 12);
+      switch (static_cast<TransmitSettingSelection>(index)) {
+        case TransmitSettingSelection::kPower:
+          oled.printf("%c POWER  %s", marker,
+                      transmitSettings.power ? "ON" : "OFF");
+          break;
+        case TransmitSettingSelection::kMode:
+          oled.printf("%c MODE   %s", marker,
+                      getTransmitModeName(transmitSettings.mode));
+          break;
+        case TransmitSettingSelection::kTemperature:
+          oled.printf("%c TEMP   %uC", marker,
+                      transmitSettings.temperatureC);
+          break;
+        case TransmitSettingSelection::kFan:
+          oled.printf("%c FAN    %s", marker,
+                      getTransmitFanName(transmitSettings.fan));
+          break;
+        case TransmitSettingSelection::kSwing:
+          oled.printf("%c SWING  %s", marker,
+                      transmitSettings.swing ? "ON" : "OFF");
+          break;
+        case TransmitSettingSelection::kTurbo:
+          oled.printf("%c TURBO  %s", marker,
+                      transmitSettings.turbo ? "ON" : "OFF");
+          break;
+        case TransmitSettingSelection::kSend:
+          oled.printf("%c SEND", marker);
+          break;
+        case TransmitSettingSelection::kLearn:
+          oled.printf("%c LEARN CURRENT", marker);
+          break;
+        case TransmitSettingSelection::kCount:
+          break;
+      }
+    }
     oled.display();
     return;
   }
@@ -687,6 +854,40 @@ void clearUiLearningStatus() {
 
 const char *getUiLearningRequestLabel() { return learningRequestLabel; }
 
+const char *getUiTransmitRequestLabel() { return transmitRequestLabel; }
+
+UiTransmitSettings getUiTransmitSettings() { return transmitSettings; }
+
+void setUiTransmitResult(bool sent, const char *label) {
+  snprintf(transmitFeedback, sizeof(transmitFeedback), "%s",
+           sent ? "IR TX: SENT" : "IR TX: NOT LEARNED");
+  setUiLastAction(sent ? "TX CUSTOM" : "TX MISSING");
+  Serial.printf("Custom IR %s: %s\n", sent ? "sent" : "not learned",
+                label ? label : "");
+  lastDisplayDrawMs = 0;
+}
+
+void showUiCustomLearningExists(const char *label) {
+  snprintf(customRecordLabel, sizeof(customRecordLabel), "%s",
+           label ? label : "");
+  customRecordActionVisible = true;
+  lastDisplayDrawMs = 0;
+}
+
+void setUiCustomEraseResult(bool erased, const char *label) {
+  customRecordActionVisible = false;
+  customRecordResultVisible = true;
+  customRecordEraseSucceeded = erased;
+  snprintf(customRecordLabel, sizeof(customRecordLabel), "%s",
+           label ? label : "");
+  snprintf(transmitFeedback, sizeof(transmitFeedback), "%s",
+           erased ? "IR: ERASED" : "IR: ERASE FAILED");
+  setUiLastAction(erased ? "IR ERASED" : "ERASE ERROR");
+  Serial.printf("Custom IR erase %s: %s\n", erased ? "complete" : "failed",
+                label ? label : "");
+  lastDisplayDrawMs = 0;
+}
+
 float getUiTemperatureC() { return temperatureC; }
 
 void setUiAutomaticControlState(
@@ -776,6 +977,34 @@ UiCommand pollUiHardware() {
   const bool confirmPressed = updateButton(confirmButton, nowMs);
   const bool backPressed = updateButton(backButton, nowMs);
 
+  if (customRecordActionVisible) {
+    if (encoderPushPressed) {
+      customRecordActionVisible = false;
+      command = UiCommand::kEraseCustomLearning;
+    } else if (confirmPressed) {
+      customRecordActionVisible = false;
+      command = UiCommand::kOverwriteCustomLearning;
+    } else if (backPressed) {
+      customRecordActionVisible = false;
+      snprintf(transmitFeedback, sizeof(transmitFeedback), "IR: UNCHANGED");
+      setUiLastAction("CANCEL");
+      lastDisplayDrawMs = 0;
+    }
+    readSensor(nowMs);
+    drawDisplay(nowMs);
+    return command;
+  }
+
+  if (customRecordResultVisible) {
+    if (encoderPushPressed || confirmPressed || backPressed) {
+      customRecordResultVisible = false;
+      lastDisplayDrawMs = 0;
+    }
+    readSensor(nowMs);
+    drawDisplay(nowMs);
+    return command;
+  }
+
   if (learningStatusVisible) {
     if (learningStartError &&
         (encoderPushPressed || confirmPressed || backPressed)) {
@@ -788,21 +1017,24 @@ UiCommand pollUiHardware() {
         clearUiLearningStatus();
         if (currentScreen == UiScreen::kLearnTarget) {
           adjustLearnTarget(1);
-        } else {
+        } else if (currentScreen != UiScreen::kTransmitMenu) {
           currentScreen = UiScreen::kMain;
         }
         setUiLastAction("NEXT");
       } else if (confirmPressed) {
         clearUiLearningStatus();
-        if (currentScreen != UiScreen::kLearnTarget) {
+        if (currentScreen != UiScreen::kLearnTarget &&
+            currentScreen != UiScreen::kTransmitMenu) {
           currentScreen = UiScreen::kMain;
         }
         setUiLastAction("LEARNED");
       } else if (backPressed) {
         clearUiLearningStatus();
-        currentScreen = currentScreen == UiScreen::kLearnTarget
-                            ? UiScreen::kLearnCategory
-                            : UiScreen::kMain;
+        if (currentScreen == UiScreen::kLearnTarget) {
+          currentScreen = UiScreen::kLearnCategory;
+        } else if (currentScreen != UiScreen::kTransmitMenu) {
+          currentScreen = UiScreen::kMain;
+        }
         setUiLastAction("BACK");
       }
     }
@@ -824,9 +1056,18 @@ UiCommand pollUiHardware() {
         break;
       }
       case UiScreen::kTransmitMenu:
-        transmitSelection = transmitSelection == TransmitSelection::kOn
-                                ? TransmitSelection::kOff
-                                : TransmitSelection::kOn;
+        if (transmitSettingEditing) {
+          adjustTransmitSetting(encoderChange);
+        } else {
+          const int8_t itemCount =
+              static_cast<int8_t>(TransmitSettingSelection::kCount);
+          transmitSettingSelection =
+              static_cast<TransmitSettingSelection>(wrapValue(
+                  static_cast<int8_t>(transmitSettingSelection) +
+                      encoderChange,
+                  0, itemCount - 1));
+          transmitFeedback[0] = '\0';
+        }
         break;
       case UiScreen::kLearnCategory: {
         const int8_t categoryCount =
@@ -872,8 +1113,10 @@ UiCommand pollUiHardware() {
         currentScreen = UiScreen::kLearnTarget;
         break;
       case UiScreen::kLearnTarget:
-      case UiScreen::kTransmitMenu:
         Serial.println("Button: PUSH (use CONFIRM for action)");
+        break;
+      case UiScreen::kTransmitMenu:
+        command = activateTransmitSetting();
         break;
       case UiScreen::kClock:
         break;
@@ -894,11 +1137,7 @@ UiCommand pollUiHardware() {
         enterSelectedMainMenu();
         break;
       case UiScreen::kTransmitMenu:
-        command = transmitSelection == TransmitSelection::kOn
-                      ? UiCommand::kSendOn
-                      : UiCommand::kSendOff;
-        Serial.printf("Button: CONFIRM -> send %s\n",
-                      command == UiCommand::kSendOn ? "ON" : "OFF");
+        command = activateTransmitSetting();
         break;
       case UiScreen::kLearnCategory:
         currentScreen = UiScreen::kLearnTarget;
@@ -925,6 +1164,12 @@ UiCommand pollUiHardware() {
         currentScreen = UiScreen::kMain;
         break;
       case UiScreen::kTransmitMenu:
+        if (transmitSettingEditing) {
+          transmitSettingEditing = false;
+          break;
+        }
+        currentScreen = UiScreen::kMainMenu;
+        break;
       case UiScreen::kLearnCategory:
         currentScreen = UiScreen::kMainMenu;
         break;

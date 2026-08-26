@@ -34,6 +34,7 @@ decode_results results;
 char commandBuffer[kCommandBufferSize];
 size_t commandLength = 0;
 uint16_t learnedTimings[kLearnedTimingCapacity];
+char pendingCustomLearningLabel[32] = "";
 
 void printCommandHelp() {
   Serial.println("Commands:");
@@ -69,6 +70,97 @@ bool sendConfiguredOff(const char *displayName) {
   return sendLearnedCommand(
       kAutomaticOffLabel, displayName, kAutoOffRaw,
       sizeof(kAutoOffRaw) / sizeof(kAutoOffRaw[0]));
+}
+
+bool sendLearnedOnly(const char *label, const char *displayName) {
+  if (!irLearningRecordExists(label)) {
+    return false;
+  }
+
+  uint16_t timingCount = 0;
+  if (!loadIrLearningSample(label, learnedTimings, kLearnedTimingCapacity,
+                            &timingCount)) {
+    return false;
+  }
+
+  Serial.printf("IR TX learned %s (%u timings)\n", label, timingCount);
+  irsend.sendRaw(learnedTimings, timingCount, kIrCarrierKhz);
+  Serial.printf("IR TX learned %s complete\n", label);
+  setUiLastAction(displayName);
+  return true;
+}
+
+void buildLegacyCustomLabel(const UiTransmitSettings &settings,
+                            bool includeTurbo, bool includeModePrefix,
+                            char *label, size_t labelSize) {
+  static const char *const kModes[] = {"cool", "fan", "heat"};
+  static const char *const kFans[] = {"f1", "f2", "f3", "fauto"};
+  const char *mode = kModes[static_cast<uint8_t>(settings.mode)];
+  const char *fan = kFans[static_cast<uint8_t>(settings.fan)];
+  const char *swing = settings.swing ? "on" : "off";
+  const char *turbo = settings.turbo ? "on" : "off";
+
+  if (includeTurbo) {
+    snprintf(label, labelSize, "%s%s_%u_%s_swing_%s_turbo_%s",
+             includeModePrefix ? "mode_" : "", mode,
+             settings.temperatureC, fan, swing, turbo);
+  } else {
+    snprintf(label, labelSize, "%s%s_%u_%s_swing_%s",
+             includeModePrefix ? "mode_" : "", mode,
+             settings.temperatureC, fan, swing);
+  }
+}
+
+bool findCustomLearnedLabel(const UiTransmitSettings &settings,
+                            const char *canonicalLabel, char *foundLabel,
+                            size_t foundLabelSize) {
+  if (irLearningRecordExists(canonicalLabel)) {
+    snprintf(foundLabel, foundLabelSize, "%s", canonicalLabel);
+    return true;
+  }
+
+  char candidate[64];
+  for (uint8_t includeModePrefix = 0; includeModePrefix < 2;
+       ++includeModePrefix) {
+    buildLegacyCustomLabel(settings, true, includeModePrefix != 0, candidate,
+                           sizeof(candidate));
+    if (irLearningRecordExists(candidate)) {
+      snprintf(foundLabel, foundLabelSize, "%s", candidate);
+      return true;
+    }
+  }
+
+  // Older names without a turbo suffix were captured with turbo disabled.
+  if (!settings.turbo) {
+    for (uint8_t includeModePrefix = 0; includeModePrefix < 2;
+         ++includeModePrefix) {
+      buildLegacyCustomLabel(settings, false, includeModePrefix != 0,
+                             candidate, sizeof(candidate));
+      if (irLearningRecordExists(candidate)) {
+        snprintf(foundLabel, foundLabelSize, "%s", candidate);
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+bool sendCustomCommand(const UiTransmitSettings &settings,
+                       const char *canonicalLabel) {
+  if (!settings.power) {
+    return sendConfiguredOff("TX OFF");
+  }
+
+  // Each AC frame contains the complete state. Only an exact learned state is
+  // sent; independent temperature/fan/swing packets cannot be safely combined.
+  char learnedLabel[32];
+  if (findCustomLearnedLabel(settings, canonicalLabel, learnedLabel,
+                             sizeof(learnedLabel))) {
+    return sendLearnedOnly(learnedLabel, "TX CUSTOM");
+  }
+
+  Serial.printf("No learned IR frame matches %s.\n", canonicalLabel);
+  return false;
 }
 
 void handleCommand(const char *command) {
@@ -199,15 +291,53 @@ void loop() {
     sendConfiguredOn("TX ON");
   } else if (uiCommand == UiCommand::kSendOff) {
     sendConfiguredOff("TX OFF");
+  } else if (uiCommand == UiCommand::kSendCustom) {
+    const char *label = getUiTransmitRequestLabel();
+    const bool sent = !isIrLearningActive() &&
+                      sendCustomCommand(getUiTransmitSettings(), label);
+    setUiTransmitResult(sent, label);
   } else if (uiCommand == UiCommand::kStartLearning) {
     const char *label = getUiLearningRequestLabel();
-    if (startIrLearning(label)) {
+    if (irLearningRecordExists(label)) {
+      snprintf(pendingCustomLearningLabel,
+               sizeof(pendingCustomLearningLabel), "%s", label);
+      showUiCustomLearningExists(label);
+    } else if (startIrLearning(label)) {
       setUiLearningProgress(getIrLearningLabel(), 0,
                             kLearningSamplesRequired, true);
     } else {
       showUiLearningStartError(label);
       setUiLastAction("LEARN ERR");
     }
+  } else if (uiCommand == UiCommand::kStartCustomLearning) {
+    const char *label = getUiTransmitRequestLabel();
+    char existingLabel[32];
+    if (findCustomLearnedLabel(getUiTransmitSettings(), label, existingLabel,
+                               sizeof(existingLabel))) {
+      snprintf(pendingCustomLearningLabel,
+               sizeof(pendingCustomLearningLabel), "%s", existingLabel);
+      showUiCustomLearningExists(existingLabel);
+    } else if (startIrLearning(label)) {
+      setUiLearningProgress(getIrLearningLabel(), 0,
+                            kLearningSamplesRequired, true);
+    } else {
+      showUiLearningStartError(label);
+      setUiLastAction("LEARN ERR");
+    }
+  } else if (uiCommand == UiCommand::kEraseCustomLearning) {
+    const bool erased = eraseIrLearningRecord(pendingCustomLearningLabel);
+    setUiCustomEraseResult(erased, pendingCustomLearningLabel);
+    pendingCustomLearningLabel[0] = '\0';
+  } else if (uiCommand == UiCommand::kOverwriteCustomLearning) {
+    const bool erased = eraseIrLearningRecord(pendingCustomLearningLabel);
+    if (erased && startIrLearning(pendingCustomLearningLabel)) {
+      setUiLearningProgress(getIrLearningLabel(), 0,
+                            kLearningSamplesRequired, true);
+    } else {
+      showUiLearningStartError(pendingCustomLearningLabel);
+      setUiLastAction("LEARN ERR");
+    }
+    pendingCustomLearningLabel[0] = '\0';
   } else if (uiCommand == UiCommand::kCancelLearning) {
     cancelIrLearning();
     clearUiLearningStatus();

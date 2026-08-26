@@ -375,6 +375,12 @@ bool eraseIrLearningRecord(const char *label) {
   return removed;
 }
 
+bool irLearningRecordExists(const char *label) {
+  char path[64];
+  return storageReady && makeRecordPath(label, path, sizeof(path)) &&
+         LittleFS.exists(path);
+}
+
 bool loadIrLearningSample(const char *label, uint16_t *timings,
                           uint16_t capacity, uint16_t *timingCount) {
   char path[64];
