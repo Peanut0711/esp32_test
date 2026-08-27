@@ -648,7 +648,11 @@ void printWifiCredentialDiagnostics() {
   fingerprintInput += kWifiPassword;
 
   unsigned char digest[32] = {};
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+  const int hashResult = mbedtls_sha256(
+#else
   const int hashResult = mbedtls_sha256_ret(
+#endif
       reinterpret_cast<const unsigned char *>(fingerprintInput.c_str()),
       fingerprintInput.length(), digest, 0);
 

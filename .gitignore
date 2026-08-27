@@ -9,3 +9,6 @@ Thumbs.db
 
 # Local Wi-Fi credentials
 **/include/wifi_secrets.h
+
+# Generated configuration for the standalone sleep/wake diagnostic
+esp32-ac-controller/sdkconfig.sleep-wake-idf-diagnostic

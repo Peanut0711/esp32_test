@@ -1,16 +1,19 @@
 # 배터리 절전 운용
 
+> 2026-08-27 진단 빌드는 Arduino Core 3.x 전환 후 GPIO1 기상을 검증하기 위해 30초 무조작 시 Light Sleep에 들어가며 RTC 타이머 기상은 비활성화되어 있다. BACK으로 깨어나면 일반 UI로 소프트 재시작한다. 아래 Deep Sleep 및 RTC 타이머 운용은 재활성화 후 검증할 목표 동작이다.
+
 배터리 절전 기능은 기본값이 OFF다. 기능 시험과 IR 학습을 마친 뒤 `AUTO SETTINGS`에서 `SLEEP`을 ON으로 바꾸고 `WAKE`를 1~5분으로 설정한 다음 `SAVE & EXIT`를 선택한다.
 
 ## 동작 흐름
 
 일반 부팅이나 GPIO1 BACK 버튼으로 깨어난 경우 OLED와 조작 버튼, IR 수신기를 초기화한다. 마지막 노브 또는 버튼 조작과 시리얼 입력으로부터 30초가 지나면 OLED를 끄고 Deep Sleep에 들어간다. BACK 버튼을 누르면 즉시 다시 깨어난다.
 
-RTC 타이머로 깨어난 경우에는 OLED와 IR 수신기를 초기화하지 않는다. SHT40을 한 번 측정하고 자동제어 조건을 검사한 뒤 바로 Deep Sleep으로 돌아간다. `TEMP` 조건은 Wi-Fi를 시작하지 않는다. `BOTH`와 `TIME`은 Deep Sleep 동안 유지된 RTC 시각을 사용하며, 유효한 시각이 없으면 Wi-Fi/NTP 준비를 최대 15초 기다린 뒤 다시 잠든다.
+RTC 타이머로 깨어난 경우에는 OLED와 IR 수신기를 초기화하지 않는다. SHT40을 한 번 측정하고 자동제어 조건을 검사한 뒤 바로 Deep Sleep으로 돌아간다. 이 비대화형 처리 중 BACK 버튼을 누르면 소프트 재시작해 일반 UI 모드로 전환한다. `TEMP` 조건은 Wi-Fi를 시작하지 않는다. `BOTH`와 `TIME`은 Deep Sleep 동안 유지된 RTC 시각을 사용하며, 유효한 시각이 없으면 Wi-Fi/NTP 준비를 최대 15초 기다린 뒤 다시 잠든다.
 
 ```text
 Deep Sleep
   ├─ WAKE 타이머 → SHT40 1회 측정 → 조건 검사 → IR 송신 또는 재수면
+  │                 └─ 처리 중 GPIO1 BACK → 일반 UI 모드로 재시작
   └─ GPIO1 BACK → OLED 메뉴 → 30초 무조작 → 재수면
 ```
 

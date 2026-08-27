@@ -4,6 +4,7 @@
 #include <IRutils.h>
 #include <IRac.h>
 #include <ctype.h>
+#include <driver/gpio.h>
 #include <esp_sleep.h>
 #include <string.h>
 
@@ -28,6 +29,11 @@ constexpr uint16_t kLearnedTimingCapacity = 1200;
 constexpr uint8_t kBackWakePin = 1;
 constexpr uint32_t kInteractiveIdleTimeoutMs = 30000;
 constexpr uint32_t kTimerWakeMaximumActiveMs = 15000;
+// Diagnostic build: isolate GPIO1 wake from the RTC timer.
+constexpr bool kEnableTimerWake = false;
+// Diagnostic build: verify GPIO1 wake under Arduino Core 3.x / ESP-IDF 5.x
+// before re-enabling Deep Sleep and the RTC timer wake path.
+constexpr bool kUseLightSleepForDiagnostic = true;
 constexpr char kAutomaticOnLabel[] = "cool_27_f1_swing_on_turbo_off";
 constexpr char kAutomaticOffLabel[] = "power_off";
 
@@ -312,20 +318,40 @@ void enterPowerSaveSleep() {
     return;
   }
 
-  const uint64_t wakeIntervalUs =
-      static_cast<uint64_t>(settings.wakeIntervalMinutes) * 60ULL *
-      1000000ULL;
-  esp_sleep_enable_timer_wakeup(wakeIntervalUs);
-  const esp_err_t gpioWakeResult = esp_deep_sleep_enable_gpio_wakeup(
-      1ULL << kBackWakePin, ESP_GPIO_WAKEUP_GPIO_LOW);
-  Serial.printf("Entering deep sleep for %u minute(s); GPIO1 wake: %s\n",
-                settings.wakeIntervalMinutes,
+  if (kEnableTimerWake) {
+    const uint64_t wakeIntervalUs =
+        static_cast<uint64_t>(settings.wakeIntervalMinutes) * 60ULL *
+        1000000ULL;
+    esp_sleep_enable_timer_wakeup(wakeIntervalUs);
+  }
+  esp_err_t gpioWakeResult;
+  if (kUseLightSleepForDiagnostic) {
+    gpioWakeResult = gpio_wakeup_enable(
+        static_cast<gpio_num_t>(kBackWakePin), GPIO_INTR_LOW_LEVEL);
+    if (gpioWakeResult == ESP_OK) {
+      gpioWakeResult = esp_sleep_enable_gpio_wakeup();
+    }
+  } else {
+    gpioWakeResult = esp_deep_sleep_enable_gpio_wakeup(
+        1ULL << kBackWakePin, ESP_GPIO_WAKEUP_GPIO_LOW);
+  }
+  Serial.printf("Entering %s; timer wake: %s; GPIO%u wake: %s\n",
+                kUseLightSleepForDiagnostic ? "light sleep" : "deep sleep",
+                kEnableTimerWake ? "ENABLED" : "DISABLED", kBackWakePin,
                 gpioWakeResult == ESP_OK ? "READY" : "FAILED");
 
   irrecv.disableIRIn();
   prepareUiForSleep();
   prepareAutomaticControlForSleep();
   Serial.flush();
+  if (kUseLightSleepForDiagnostic) {
+    const esp_err_t sleepResult = esp_light_sleep_start();
+    Serial.printf("Light sleep exited: %s; wakeup cause: %d\n",
+                  esp_err_to_name(sleepResult),
+                  static_cast<int>(esp_sleep_get_wakeup_cause()));
+    Serial.flush();
+    ESP.restart();
+  }
   esp_deep_sleep_start();
 }
 
@@ -355,10 +381,13 @@ void printDecodedResult(const decode_results *result) {
 
 void setup() {
   bootStartedMs = millis();
-  lowPowerTimerWake =
-      esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER;
+  const esp_sleep_wakeup_cause_t wakeupCause = esp_sleep_get_wakeup_cause();
+  lowPowerTimerWake = wakeupCause == ESP_SLEEP_WAKEUP_TIMER;
+  pinMode(kBackWakePin, INPUT_PULLUP);
   Serial.begin(115200);
   delay(lowPowerTimerWake ? 20 : 500);
+  Serial.printf("Wakeup cause: %d%s\n", static_cast<int>(wakeupCause),
+                wakeupCause == ESP_SLEEP_WAKEUP_GPIO ? " (GPIO)" : "");
 
   if (!lowPowerTimerWake) {
     irrecv.enableIRIn();
@@ -383,6 +412,13 @@ void setup() {
 }
 
 void loop() {
+  if (lowPowerTimerWake && digitalRead(kBackWakePin) == LOW) {
+    Serial.println(
+        "BACK pressed during timer wake; restarting in interactive mode.");
+    Serial.flush();
+    ESP.restart();
+  }
+
   pollSerialCommands();
   const UiCommand uiCommand = pollUiHardware();
   if (uiCommand == UiCommand::kSendOn) {
