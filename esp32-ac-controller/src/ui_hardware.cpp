@@ -10,8 +10,9 @@
 
 namespace {
 
-constexpr uint8_t kSdaPin = 8;
-constexpr uint8_t kSclPin = 9;
+constexpr uint8_t kSdaPin = 21;
+constexpr uint8_t kSclPin = 20;
+constexpr uint8_t kHeartbeatLedPin = 8;
 constexpr uint8_t kEncoderAPin = 5;
 constexpr uint8_t kEncoderBPin = 6;
 constexpr uint8_t kEncoderPushPin = 7;
@@ -24,6 +25,7 @@ constexpr uint32_t kButtonDebounceMs = 25;
 constexpr uint32_t kSensorIntervalMs = 1000;
 constexpr uint32_t kSensorLogIntervalMs = 10000;
 constexpr uint32_t kDisplayIntervalMs = 100;
+constexpr uint32_t kHeartbeatToggleIntervalMs = 500;
 constexpr uint8_t kEncoderDiagnosticQueueSize = 32;
 constexpr uint8_t kEncoderDetentState = 0b11;
 constexpr int8_t kEncoderMinimumDetentEdges = 2;
@@ -118,6 +120,8 @@ AutomaticControlSettings draftAutomaticSettings = {
     true, 6, 0, 28.0F, AutomaticTriggerMode::kTimeAndTemperature, false, 3};
 bool uiInteractiveEnabled = true;
 volatile bool encoderDiagnosticsEnabled = false;
+bool heartbeatLedOn = false;
+uint32_t lastHeartbeatToggleMs = 0;
 uint32_t lastUiInteractionMs = 0;
 UiScreen currentScreen = UiScreen::kMain;
 UiScreen automaticSettingsReturnScreen = UiScreen::kMain;
@@ -245,6 +249,21 @@ void IRAM_ATTR handleEncoderEdge() {
     }
   }
   portEXIT_CRITICAL_ISR(&encoderMux);
+}
+
+void setHeartbeatLed(bool enabled) {
+  heartbeatLedOn = enabled;
+  // The ESP32-C3 SuperMini onboard blue LED is active-low on GPIO8.
+  digitalWrite(kHeartbeatLedPin, enabled ? LOW : HIGH);
+}
+
+void updateHeartbeat(uint32_t nowMs) {
+  if (!uiInteractiveEnabled ||
+      nowMs - lastHeartbeatToggleMs < kHeartbeatToggleIntervalMs) {
+    return;
+  }
+  lastHeartbeatToggleMs = nowMs;
+  setHeartbeatLed(!heartbeatLedOn);
 }
 
 void printPendingEncoderDiagnostics() {
@@ -1145,6 +1164,9 @@ AutomaticControlSettings getUiAutomaticSettings() {
 void setupUiHardware(bool interactive) {
   uiInteractiveEnabled = interactive;
   lastUiInteractionMs = millis();
+  pinMode(kHeartbeatLedPin, OUTPUT);
+  setHeartbeatLed(false);
+  lastHeartbeatToggleMs = millis();
   Wire.begin(kSdaPin, kSclPin);
   Wire.setClock(400000);
 
@@ -1155,6 +1177,8 @@ void setupUiHardware(bool interactive) {
                             : "SKIPPED");
   Serial.printf("I2C SHT40 0x%02X: %s\n", kSht40Address,
                 sht40Ready ? "FOUND" : "NOT FOUND");
+  Serial.printf("Heartbeat LED GPIO%u: %s\n", kHeartbeatLedPin,
+                interactive ? "500 ms toggle" : "OFF");
 
   if (sht40Ready) {
     Serial.println("SHT40 initialization start.");
@@ -1226,6 +1250,7 @@ void prepareUiForSleep() {
     oled.display();
     oled.oled_command(SH110X_DISPLAYOFF);
   }
+  setHeartbeatLed(false);
 }
 
 uint32_t getUiLastInteractionMs() { return lastUiInteractionMs; }
@@ -1233,6 +1258,7 @@ uint32_t getUiLastInteractionMs() { return lastUiInteractionMs; }
 UiCommand pollUiHardware() {
   const uint32_t nowMs = millis();
   UiCommand command = UiCommand::kNone;
+  updateHeartbeat(nowMs);
   if (!uiInteractiveEnabled) {
     readSensor(nowMs);
     return command;
