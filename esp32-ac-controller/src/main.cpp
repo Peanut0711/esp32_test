@@ -30,10 +30,9 @@ constexpr uint8_t kBackWakePin = 1;
 constexpr uint8_t kHeartbeatDiagnosticPin = 8;
 constexpr uint32_t kInteractiveIdleTimeoutMs = 30000;
 constexpr uint32_t kTimerWakeMaximumActiveMs = 15000;
-// Diagnostic build: isolate GPIO1 wake from the RTC timer.
-constexpr bool kEnableTimerWake = false;
-// Diagnostic build: verify GPIO1 Deep Sleep wake before re-enabling the RTC
-// timer wake path.
+// Use GPIO1 BACK and the configured RTC interval as concurrent wake sources.
+constexpr bool kEnableTimerWake = true;
+// Diagnostic switch retained for comparing Light Sleep and Deep Sleep.
 constexpr bool kUseLightSleepForDiagnostic = false;
 // Diagnostic switch for isolating peripheral-specific sleep preparation.
 constexpr bool kSkipPeripheralSleepPreparationForDiagnostic = false;
@@ -54,12 +53,12 @@ uint32_t lastSerialActivityMs = 0;
 
 bool sendLearnedOnly(const char *label, const char *displayName);
 
-void showGpioWakeMarker() {
+void showWakeMarker(uint16_t intervalMs, uint8_t toggleCount) {
   pinMode(kHeartbeatDiagnosticPin, OUTPUT);
-  for (uint8_t i = 0; i < 20; ++i) {
+  for (uint8_t i = 0; i < toggleCount; ++i) {
     digitalWrite(kHeartbeatDiagnosticPin,
                  (i & 1U) == 0 ? LOW : HIGH);
-    delay(100);
+    delay(intervalMs);
   }
   digitalWrite(kHeartbeatDiagnosticPin, HIGH);
 }
@@ -421,7 +420,9 @@ void setup() {
   // reconfigure their GPIOs.
   gpio_deep_sleep_hold_dis();
   if (wakeupCause == ESP_SLEEP_WAKEUP_GPIO) {
-    showGpioWakeMarker();
+    showWakeMarker(100, 20);
+  } else if (wakeupCause == ESP_SLEEP_WAKEUP_TIMER) {
+    showWakeMarker(250, 8);
   }
   pinMode(kBackWakePin, INPUT_PULLUP);
   Serial.begin(115200);
