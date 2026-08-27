@@ -27,13 +27,16 @@ constexpr uint8_t kReceiveTimeoutMs = 50;
 constexpr size_t kCommandBufferSize = 64;
 constexpr uint16_t kLearnedTimingCapacity = 1200;
 constexpr uint8_t kBackWakePin = 1;
+constexpr uint8_t kHeartbeatDiagnosticPin = 8;
 constexpr uint32_t kInteractiveIdleTimeoutMs = 30000;
 constexpr uint32_t kTimerWakeMaximumActiveMs = 15000;
 // Diagnostic build: isolate GPIO1 wake from the RTC timer.
 constexpr bool kEnableTimerWake = false;
-// Diagnostic build: verify GPIO1 wake under Arduino Core 3.x / ESP-IDF 5.x
-// before re-enabling Deep Sleep and the RTC timer wake path.
-constexpr bool kUseLightSleepForDiagnostic = true;
+// Diagnostic build: verify GPIO1 Deep Sleep wake before re-enabling the RTC
+// timer wake path.
+constexpr bool kUseLightSleepForDiagnostic = false;
+// Diagnostic switch for isolating peripheral-specific sleep preparation.
+constexpr bool kSkipPeripheralSleepPreparationForDiagnostic = false;
 constexpr char kAutomaticOnLabel[] = "cool_27_f1_swing_on_turbo_off";
 constexpr char kAutomaticOffLabel[] = "power_off";
 
@@ -50,6 +53,16 @@ uint32_t bootStartedMs = 0;
 uint32_t lastSerialActivityMs = 0;
 
 bool sendLearnedOnly(const char *label, const char *displayName);
+
+void showGpioWakeMarker() {
+  pinMode(kHeartbeatDiagnosticPin, OUTPUT);
+  for (uint8_t i = 0; i < 20; ++i) {
+    digitalWrite(kHeartbeatDiagnosticPin,
+                 (i & 1U) == 0 ? LOW : HIGH);
+    delay(100);
+  }
+  digitalWrite(kHeartbeatDiagnosticPin, HIGH);
+}
 
 void printCommandHelp() {
   Serial.println("Commands:");
@@ -318,6 +331,25 @@ void enterPowerSaveSleep() {
     return;
   }
 
+  if (kSkipPeripheralSleepPreparationForDiagnostic) {
+    pinMode(kHeartbeatDiagnosticPin, OUTPUT);
+    digitalWrite(kHeartbeatDiagnosticPin, HIGH);
+  } else {
+    irrecv.disableIRIn();
+    prepareUiForSleep();
+    prepareAutomaticControlForSleep();
+  }
+
+  // Configure GPIO wake last, after every peripheral has completed its sleep
+  // preparation. This matches the minimal GPIO1 deep-sleep diagnostic that
+  // was verified on the target board.
+  pinMode(kBackWakePin, INPUT_PULLUP);
+  if (digitalRead(kBackWakePin) == LOW) {
+    Serial.println("BACK became active during sleep preparation; restarting.");
+    Serial.flush();
+    ESP.restart();
+  }
+
   if (kEnableTimerWake) {
     const uint64_t wakeIntervalUs =
         static_cast<uint64_t>(settings.wakeIntervalMinutes) * 60ULL *
@@ -339,11 +371,13 @@ void enterPowerSaveSleep() {
                 kUseLightSleepForDiagnostic ? "light sleep" : "deep sleep",
                 kEnableTimerWake ? "ENABLED" : "DISABLED", kBackWakePin,
                 gpioWakeResult == ESP_OK ? "READY" : "FAILED");
-
-  irrecv.disableIRIn();
-  prepareUiForSleep();
-  prepareAutomaticControlForSleep();
+  Serial.printf("Peripheral sleep preparation: %s\n",
+                kSkipPeripheralSleepPreparationForDiagnostic ? "SKIPPED"
+                                                              : "ENABLED");
+  Serial.printf("GPIO%u level before sleep: %s\n", kBackWakePin,
+                digitalRead(kBackWakePin) == HIGH ? "HIGH" : "LOW");
   Serial.flush();
+  delay(50);
   if (kUseLightSleepForDiagnostic) {
     const esp_err_t sleepResult = esp_light_sleep_start();
     Serial.printf("Light sleep exited: %s; wakeup cause: %d\n",
@@ -383,6 +417,12 @@ void setup() {
   bootStartedMs = millis();
   const esp_sleep_wakeup_cause_t wakeupCause = esp_sleep_get_wakeup_cause();
   lowPowerTimerWake = wakeupCause == ESP_SLEEP_WAKEUP_TIMER;
+  // Release any digital-pad hold state left by Deep Sleep before peripherals
+  // reconfigure their GPIOs.
+  gpio_deep_sleep_hold_dis();
+  if (wakeupCause == ESP_SLEEP_WAKEUP_GPIO) {
+    showGpioWakeMarker();
+  }
   pinMode(kBackWakePin, INPUT_PULLUP);
   Serial.begin(115200);
   delay(lowPowerTimerWake ? 20 : 500);

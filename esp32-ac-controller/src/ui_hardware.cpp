@@ -1164,6 +1164,8 @@ AutomaticControlSettings getUiAutomaticSettings() {
 void setupUiHardware(bool interactive) {
   uiInteractiveEnabled = interactive;
   lastUiInteractionMs = millis();
+  gpio_hold_dis(static_cast<gpio_num_t>(kHeartbeatLedPin));
+  gpio_reset_pin(static_cast<gpio_num_t>(kHeartbeatLedPin));
   pinMode(kHeartbeatLedPin, OUTPUT);
   setHeartbeatLed(false);
   lastHeartbeatToggleMs = millis();
@@ -1195,6 +1197,9 @@ void setupUiHardware(bool interactive) {
   if (oledReady) {
     Serial.println("OLED initialization start.");
     oledReady = oled.begin(kOledAddress, false);
+    if (oledReady) {
+      oled.oled_command(SH110X_DISPLAYON);
+    }
     Serial.println(oledReady ? "OLED initialization complete."
                              : "OLED initialization failed.");
   }

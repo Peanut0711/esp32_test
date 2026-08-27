@@ -4,10 +4,11 @@
 
 namespace {
 
-// The ESP32-C3 SuperMini onboard BOOT button pulls GPIO9 low.
-constexpr gpio_num_t kWakePin = GPIO_NUM_9;
+// The UI module's BACK button pulls GPIO1 low.
+constexpr gpio_num_t kWakePin = GPIO_NUM_1;
 constexpr uint8_t kHeartbeatLedPin = 8;
 constexpr uint32_t kHeartbeatToggleIntervalMs = 500;
+constexpr uint32_t kWakeSuccessToggleIntervalMs = 100;
 constexpr uint32_t kPreSleepDelayMs = 30000;
 
 bool heartbeatLedOn = false;
@@ -21,16 +22,27 @@ void setHeartbeatLed(bool enabled) {
 }  // namespace
 
 void setup() {
-  pinMode(static_cast<uint8_t>(kWakePin), INPUT_PULLUP);
   pinMode(kHeartbeatLedPin, OUTPUT);
   setHeartbeatLed(false);
 
   Serial.begin(115200);
   delay(500);
-  Serial.printf("Minimal light-sleep wake diagnostic: GPIO%d -> GND\n",
+  const esp_sleep_wakeup_cause_t wakeupCause = esp_sleep_get_wakeup_cause();
+  Serial.printf("Minimal deep-sleep wake diagnostic: GPIO%d -> GND\n",
                 static_cast<int>(kWakePin));
+  Serial.printf("Boot wakeup cause: %d%s\n", static_cast<int>(wakeupCause),
+                wakeupCause == ESP_SLEEP_WAKEUP_GPIO ? " (GPIO)" : "");
 
-  Serial.printf("Light sleep starts in %lu seconds.\n",
+  if (wakeupCause == ESP_SLEEP_WAKEUP_GPIO) {
+    Serial.println("GPIO1 deep-sleep wake succeeded; fast blink enabled.");
+    Serial.flush();
+    lastHeartbeatToggleMs = millis();
+    return;
+  }
+
+  pinMode(static_cast<uint8_t>(kWakePin), INPUT_PULLUP);
+
+  Serial.printf("Deep sleep starts in %lu seconds.\n",
                 static_cast<unsigned long>(kPreSleepDelayMs / 1000));
   const uint32_t countdownStartedMs = millis();
   while (millis() - countdownStartedMs < kPreSleepDelayMs) {
@@ -47,30 +59,22 @@ void setup() {
     delay(10);
   }
 
-  esp_err_t wakeResult =
-      gpio_wakeup_enable(kWakePin, GPIO_INTR_LOW_LEVEL);
-  if (wakeResult == ESP_OK) {
-    wakeResult = esp_sleep_enable_gpio_wakeup();
-  }
+  const esp_err_t wakeResult = esp_deep_sleep_enable_gpio_wakeup(
+      1ULL << static_cast<uint8_t>(kWakePin), ESP_GPIO_WAKEUP_GPIO_LOW);
   Serial.printf("GPIO wake configuration: %s\n", esp_err_to_name(wakeResult));
-  Serial.println("Entering light sleep now.");
+  Serial.printf("GPIO%d level before sleep: %s\n", static_cast<int>(kWakePin),
+                digitalRead(static_cast<uint8_t>(kWakePin)) == HIGH ? "HIGH"
+                                                                    : "LOW");
+  Serial.println("Entering deep sleep now.");
   Serial.flush();
   delay(50);
 
-  const esp_err_t sleepResult = esp_light_sleep_start();
-  const esp_sleep_wakeup_cause_t wakeupCause = esp_sleep_get_wakeup_cause();
-  Serial.printf("Light sleep exited: %s; wakeup cause: %d%s\n",
-                esp_err_to_name(sleepResult), static_cast<int>(wakeupCause),
-                wakeupCause == ESP_SLEEP_WAKEUP_GPIO ? " (GPIO)" : "");
-
-  setHeartbeatLed(true);
-  delay(1000);
-  lastHeartbeatToggleMs = millis();
+  esp_deep_sleep_start();
 }
 
 void loop() {
   const uint32_t nowMs = millis();
-  if (nowMs - lastHeartbeatToggleMs >= kHeartbeatToggleIntervalMs) {
+  if (nowMs - lastHeartbeatToggleMs >= kWakeSuccessToggleIntervalMs) {
     lastHeartbeatToggleMs = nowMs;
     setHeartbeatLed(!heartbeatLedOn);
   }
